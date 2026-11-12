@@ -1,0 +1,251 @@
+name: Build and Release Binaries
+
+on:
+  push:
+    branches: [ main ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  python-dist:
+    name: Build wheel and sdist
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+
+      # The tag is the version: written into pyproject.toml and the extension's
+      # package.json / lock before building, so a release never ships a stale
+      # number. Same step in every job that builds.
+      - name: Set the version from the tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: python3 scripts/bump_version.py "${{ github.ref_name }}"
+
+      - name: Build
+        run: uv build --out-dir dist
+
+      - name: Check the graph page is packaged
+        run: |
+          unzip -l dist/*.whl | grep "code_visualizer/viz/static/graph.html" > /dev/null
+          unzip -l dist/*.whl | grep "code_visualizer/viz/static/d3.v7.min.js" > /dev/null
+          unzip -l dist/*.whl | grep "code_visualizer/viz/static/logo.svg" > /dev/null
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: python-dist
+          path: dist/*
+
+  build:
+    name: Build on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        include:
+          - os: ubuntu-latest
+            artifact_name: cviz-linux-x86_64
+          - os: windows-latest
+            artifact_name: cviz-windows.exe
+          - os: macos-latest
+            artifact_name: cviz-macos-arm64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          architecture: 'x64'
+          cache: 'pip'
+
+      - name: Set the version from the tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: python scripts/bump_version.py "${{ github.ref_name }}"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip setuptools wheel build
+          pip install .
+          pip install pyinstaller
+
+      - name: Build with PyInstaller
+        shell: bash
+        run: pyinstaller cviz.spec --clean
+
+      - name: Smoke-test the binary (graph page bundled)
+        shell: bash
+        # `grep > /dev/null` rather than `grep -q`: -q exits on the first match,
+        # the producer then gets SIGPIPE and pipefail fails the step.
+        # Archive entry names use the platform separator, and archive_viewer
+        # prints them with repr(): on Windows they read `viz\\static\\...`,
+        # hence the `[\\/]+` separators in the last pattern.
+        env:
+          PYTHONUTF8: '1'
+        run: |
+          bin=dist/cviz; [ -f dist/cviz.exe ] && bin=dist/cviz.exe
+
+          url=$("$bin" open README.md:1 --print) \
+            || { echo "::error::'cviz open --print' failed"; exit 1; }
+          echo "cviz open --print -> $url"
+          echo "$url" | grep "/graph?path=" > /dev/null \
+            || { echo "::error::unexpected 'cviz open' output: $url"; exit 1; }
+
+          "$bin" graph --help > graph-help.txt \
+            || { echo "::error::'cviz graph --help' failed"; cat graph-help.txt; exit 1; }
+
+          pyi-archive_viewer -l "$bin" > archive.txt
+          grep -E 'viz[\\/]+static[\\/]+graph\.html' archive.txt > /dev/null \
+            || { echo "::error::graph page missing from the binary"; grep -i "viz" archive.txt | head -20; exit 1; }
+
+      - name: Rename artifact (Linux/Mac)
+        if: runner.os != 'Windows'
+        run: mv dist/cviz dist/${{ matrix.artifact_name }}
+
+      - name: Rename artifact (Windows)
+        if: runner.os == 'Windows'
+        run: move dist\cviz.exe dist\${{ matrix.artifact_name }}
+        shell: cmd
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: dist/${{ matrix.artifact_name }}
+
+  package-vsix:
+    name: Package VS Code extension with bundled Windows binary
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Set the version from the tag
+        shell: bash
+        run: python3 scripts/bump_version.py "${{ github.ref_name }}"
+
+      - name: Download cviz-windows.exe artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: cviz-windows.exe
+          path: extensions/vscode/bin
+
+      - name: Install extension deps
+        working-directory: extensions/vscode
+        run: npm ci
+
+      - name: Compile TypeScript
+        working-directory: extensions/vscode
+        run: npm run compile
+
+      - name: Package VSIX (binary already in place, skip fetch)
+        working-directory: extensions/vscode
+        env:
+          CVIZ_BINARY_SKIP: '1'
+        run: |
+          version=$(node -p "require('./package.json').version")
+          npx @vscode/vsce package --allow-star-activation -o "code-visualizer-vscode-${version}.vsix"
+
+      - name: Upload VSIX
+        uses: actions/upload-artifact@v4
+        with:
+          name: code-visualizer-vscode-vsix
+          path: extensions/vscode/code-visualizer-vscode-*.vsix
+
+  # The one-line installers (scripts/install.sh, install.ps1) on each OS,
+  # with the wheel just built: uv, then the tool, then `cviz` on the PATH.
+  install-scripts:
+    name: Installer on ${{ matrix.os }}
+    needs: python-dist
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: python-dist
+          path: dist
+
+      - name: Run install.sh
+        if: runner.os != 'Windows'
+        env:
+          CVIZ_NO_START: '1'
+        run: |
+          export CVIZ_WHEEL="file://$(ls "$PWD"/dist/*.whl)"
+          sh scripts/install.sh < /dev/null
+          "$(uv tool dir --bin 2>/dev/null || echo "$HOME/.local/bin")/cviz" version
+
+      - name: Run install.ps1 (Windows PowerShell, as `irm | iex` does)
+        if: runner.os == 'Windows'
+        shell: powershell
+        env:
+          CVIZ_NO_START: '1'
+        run: |
+          $env:CVIZ_WHEEL = ([Uri](Resolve-Path dist\*.whl).Path).AbsoluteUri
+          Get-Content scripts\install.ps1 -Raw | Invoke-Expression
+          $env:Path = "$env:USERPROFILE\.local\bin;$env:Path"
+          & "$((uv tool dir --bin).Trim())\cviz.exe" version
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+  # The test suite (test.yml) on the tagged commit: pushing a tag does not
+  # trigger test.yml itself, and the release must not ship a red build.
+  tests:
+    name: Tests
+    if: startsWith(github.ref, 'refs/tags/v')
+    uses: ./.github/workflows/test.yml
+
+  release:
+    name: Create Release
+    needs: [python-dist, build, package-vsix, tests, install-scripts]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      # The installers install the release they are attached to, so that
+      # .../releases/download/vX.Y.Z/install.sh keeps installing vX.Y.Z.
+      - name: Stamp the installers with the tag
+        run: |
+          mkdir -p artifacts/installers
+          sed 's/^RELEASE_TAG=""/RELEASE_TAG="${{ github.ref_name }}"/' scripts/install.sh > artifacts/installers/install.sh
+          sed 's/^\$ReleaseTag = ""/$ReleaseTag = "${{ github.ref_name }}"/' scripts/install.ps1 > artifacts/installers/install.ps1
+          grep -q '^RELEASE_TAG="${{ github.ref_name }}"' artifacts/installers/install.sh
+          grep -q '^\$ReleaseTag = "${{ github.ref_name }}"' artifacts/installers/install.ps1
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/python-dist/*
+            artifacts/cviz-linux-x86_64/cviz-linux-x86_64
+            artifacts/cviz-windows.exe/cviz-windows.exe
+            artifacts/cviz-macos-arm64/cviz-macos-arm64
+            artifacts/code-visualizer-vscode-vsix/*.vsix
+            artifacts/installers/install.sh
+            artifacts/installers/install.ps1
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

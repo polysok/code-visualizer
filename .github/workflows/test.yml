@@ -1,0 +1,32 @@
+name: Tests
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  # Called by the release workflow on the tagged commit.
+  workflow_call:
+
+jobs:
+  pytest:
+    name: pytest
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+
+      - name: Install
+        run: uv sync --python 3.12 --extra dev
+
+      # The tree-sitter grammars are downloaded on first use: cache them.
+      - name: Cache the tree-sitter grammars
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/tree-sitter-language-pack
+          key: tree-sitter-grammars-${{ hashFiles('uv.lock') }}
+
+      - name: Run the tests
+        run: uv run pytest -q -p no:cacheprovider tests

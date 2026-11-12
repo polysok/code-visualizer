@@ -66,6 +66,7 @@ cviz_btc/
 # Claude
 .claude/*
 *.spec
+!cviz.spec
 todo.md
 .code-visualizer
 .ignore
