@@ -1,0 +1,142 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+# Based on CodeGraphContext (https://github.com/CodeGraphContext/CodeGraphContext, MIT).
+name = "code-visualizer"
+version = "0.9.8"
+description = "Fork of CodeGraphContext: code graph indexing with an IDE-linked dependency-graph web page (VS Code, JetBrains, Zed)."
+authors = [{ name = "Shashank Shekhar Singh", email = "shashankshekharsingh1205@gmail.com" }]
+maintainers = [{ name = "poly sok" }]  # this fork; upstream authors above
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.10"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Topic :: Software Development :: Libraries :: Application Frameworks",
+]
+dependencies = [
+    "watchdog>=3.0.0",
+    "stdlibs>=2023.11.18",
+    "typer>=0.9.0",
+    "rich>=13.7.0",
+    "inquirerpy>=0.3.4",
+    "python-dotenv>=1.0.0",
+    "tree-sitter>=0.24.0,<0.26.0",
+    # ------------------------------------------------------------------
+    # tree-sitter-language-pack upper bound (Haskell golden regression)
+    #
+    # 1.21.0 (released 2026-10-04) reshapes the Haskell tree-sitter grammar:
+    # `class ... where` and `data ... = ...` declarations stop being
+    # surfaced, so the Haskell parser emits **no Class nodes at all**.
+    # Evidence, all on the same commit 642c3215f8 with no code change:
+    #   2026-10-02 green  -> installed tree-sitter-language-pack 1.20.0
+    #   2026-10-06 red    -> installed tree-sitter-language-pack 1.21.0
+    # Breaks three suites on every supported Python version (3.12/3.13/3.14):
+    #   tests/integration/test_parser_goldens.py::test_language_golden[sample_project_haskell]
+    #       Nodes regression mismatch: Missing 39 expected nodes (all Class)
+    #   tests/unit/parsers/test_1538_spurious_records.py::test_haskell_curried_application_is_one_call
+    #   tests/unit/tools/test_cross_lang_call_resolution_patterns.py::
+    #       ...::test_haskell_typeclass_instances_and_constructor_call
+    # Keep <1.21.0 until the Haskell extractor is taught the 1.21 node layout.
+    # ------------------------------------------------------------------
+    "tree-sitter-language-pack>=1.6,<1.21.0",
+    "tree-sitter-c-sharp>=0.21.0",
+    "pyyaml",
+    "nbformat",
+    "nbconvert>=7.16.6",
+    "pathspec>=0.12.1",
+    "requests>=2.28.0",
+    "protobuf>=3.20,<3.21",
+    "ladybug>=0.19,<0.20; sys_platform == 'win32' or (sys_platform != 'win32' and python_version >= '3.10')",
+    "mcp>=2.2.0,<3",
+    "fastapi>=0.100.0",
+    "uvicorn>=0.22.0",
+    "cryptography>=42.0.0"
+]
+
+[project.optional-dependencies]
+parsing = [
+    "tree-sitter>=0.24.0,<0.26.0",
+    # See the pin note under [project].dependencies.
+    "tree-sitter-language-pack>=1.6,<1.21.0",
+    "tree-sitter-c-sharp>=0.21.0",
+]
+# LadybugDB is a core dependency; the extra is kept for compatibility.
+ladybug = [
+    "ladybug>=0.19,<0.20; sys_platform == 'win32' or (sys_platform != 'win32' and python_version >= '3.10')",
+]
+# Local embeddings for the natural-language search of the graph page
+# (fastembed: ONNX, no torch; the model is downloaded on first use). Without
+# it, the search works with an OpenAI-compatible embedding server.
+semantic = [
+    "fastembed>=0.5",
+]
+gcf = [
+    "gcf-python>=1.0.0",
+]
+dev = [
+    "pytest>=7.4.0",
+    "black>=23.11.0",
+    "pytest-asyncio>=0.21.0",
+    "pytest-mock",
+    "ruff",
+    # mcp>=2 renamed its vendored httpx to httpx2, so it's no longer pulled
+    # in transitively; tests/unit/api/test_mcp_streamable_http.py needs the
+    # real package directly.
+    "httpx",
+]
+# Optional drivers for `cviz datasource` ingestion (MySQL/Aurora, Cassandra).
+datasources = [
+    "redis>=5",
+    "pymysql",
+    "mysql-connector-python",
+    "cassandra-driver",
+]
+
+[project.urls]
+"Homepage" = "https://github.com/polysok/code-visualizer"
+"Bug Tracker" = "https://github.com/polysok/code-visualizer/issues"
+
+[project.scripts]
+cviz = "code_visualizer.cli.main:app"
+code-visualizer = "code_visualizer.cli.main:app"
+cviz-open = "code_visualizer.cli.open_in_graph:main"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+include-package-data = true
+
+[tool.setuptools.package-data]
+code_visualizer = ["viz/static/*"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["code_visualizer*"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+norecursedirs = ["tests/fixtures", "tests/e2e/sample_projects", "venv", ".git", "__pycache__"]
+markers = [
+    "integration: mark a test as an integration test.",
+    "e2e: mark a test as an end-to-end test.",
+    "slow: mark test as slow."
+]

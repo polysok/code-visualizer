@@ -1,0 +1,325 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Code Visualizer</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='7' fill='%235b4ce0'/%3E%3Ccircle cx='5' cy='8' r='4' fill='%23b7791f'/%3E%3Ccircle cx='27' cy='24' r='4' fill='%230f8a7a'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/graph-assets/graph.css">
+  <script>
+    // Apply the saved theme before the first paint (graph.js owns the setting).
+    try {
+      var t = (JSON.parse(localStorage.getItem("cviz.graph.settings") || "{}") || {}).theme;
+      if (t === "light" || t === "dark") document.documentElement.dataset.theme = t;
+    } catch (_) {}
+  </script>
+  <script src="/graph-assets/d3.v7.min.js"></script>
+</head>
+<body>
+  <header id="toolbar">
+    <button type="button" id="about-btn" class="about-btn" title="About Code Visualizer" aria-label="About Code Visualizer" aria-haspopup="dialog"><span class="logo-mark" aria-hidden="true"></span></button>
+    <button id="live" class="live" title="Live updates">
+      <span class="dot"></span><span id="live-text">offline</span>
+    </button>
+    <button type="button" id="repo-label" class="repo-label" hidden aria-haspopup="dialog"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg><span id="repo-name"></span><span id="sources-count" class="sources-count"></span></button>
+    <span id="branch-label" class="branch-label" hidden><span class="branch-sep">/</span><span id="branch-name"></span></span>
+    <span id="compare" class="compare" hidden>
+      <span class="vs">vs</span>
+      <select id="ch-target" aria-label="Branch to compare with"></select>
+      <button type="button" class="chat-icon" id="ch-fetch" hidden title="Fetch the remote branches (git fetch)" aria-label="Fetch the remote branches"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></svg></button>
+      <button type="button" class="chat-icon" id="ch-close" hidden title="Stop comparing" aria-label="Stop comparing"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6L6 18"/><path d="M6 6l12 12"/></svg></button>
+    </span>
+    <span class="spacer"></span>
+
+  </header>
+
+  <main id="stage">
+    <svg id="graph" role="img" aria-label="Dependency graph"></svg>
+
+    <div id="empty" class="empty" hidden>
+      <div class="logo-mark empty-logo" aria-hidden="true"></div>
+      <h1>Code Visualizer</h1>
+    </div>
+
+    <div id="status" class="status" hidden></div>
+    <div id="toast" class="toast" hidden></div>
+
+    <div class="top-left">
+    <nav id="entries" class="entries" hidden aria-label="Entry points">
+      <button type="button" id="entries-toggle" class="entries-head" aria-expanded="true" title="Functions nothing calls, that call the most: where to start reading">
+        Entry points<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
+      </button>
+      <ul id="entries-list"></ul>
+    </nav>
+
+    <span id="center-label" class="center-label" hidden title="Current artifact"></span>
+    </div>
+
+    <div id="legend" class="legend">
+      <button type="button" id="legend-toggle" class="legend-toggle" aria-expanded="false" title="What the colours mean">
+        <i class="sw caller"></i><i class="sw center"></i><i class="sw callee"></i>
+      </button>
+      <ul class="legend-list" aria-label="Legend">
+        <li><i class="sw caller"></i>Caller</li>
+        <li><i class="sw center"></i>Selected</li>
+        <li><i class="sw callee"></i>Callee</li>
+        <li><i class="sw parent"></i>Base</li>
+        <li><i class="sw child"></i>Derived</li>
+        <li><i class="sw result"></i>Search result</li>
+        <li class="changes-only"><i class="sw modified"></i>Modified, moved (Changes)</li>
+        <li class="changes-only"><i class="sw added"></i>Added (Changes)</li>
+        <li class="changes-only"><i class="sw deleted"></i>Deleted (Changes)</li>
+        <li><i class="ln dashed"></i>Heuristic call</li>
+      </ul>
+    </div>
+
+    <button class="btn icon-btn settings-btn" id="btn-settings" title="Settings" aria-label="Settings"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg></button>
+    <div class="chat-dock">
+      <div class="view-tools" aria-label="View">
+        <div class="segmented" role="group" aria-label="Layout">
+          <button class="btn active" data-layout="force">Force</button>
+          <button class="btn" data-layout="tree">Layers</button>
+          <button class="btn" data-layout="radial">Radial</button>
+        </div>
+        <button class="btn icon-btn" id="btn-fit" title="Fit to screen (F)" aria-label="Fit to screen"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="2.5"/><line x1="12" y1="2" x2="12" y2="5"/><line x1="12" y1="19" x2="12" y2="22"/><line x1="2" y1="12" x2="5" y2="12"/><line x1="19" y1="12" x2="22" y2="12"/></svg></button>
+        <button class="btn icon-btn" id="btn-png" title="Export PNG" aria-label="Export PNG"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3"/></svg></button>
+      </div>
+    <section id="chat" class="chat chat-idle" aria-label="Natural-language search">
+      <div class="chat-head">
+        <button type="button" class="chat-icon" id="chat-clear" title="New conversation" aria-label="New conversation"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/></svg></button>
+        <button type="button" class="chat-icon" id="chat-toggle" title="Collapse" aria-label="Collapse the conversation" aria-expanded="true"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></button>
+      </div>
+      <div class="chat-body"><div class="chat-log" id="chat-log" aria-live="polite"></div></div>
+      <form class="chat-input" id="chat-form">
+        <textarea id="chat-text" rows="2" maxlength="2000" placeholder="Filter the graph as you type  ( / )&#10;Enter: a path (src/app.py:42), a symbol or a question" aria-label="Search the code in plain words"></textarea>
+        <button type="submit" class="chat-icon chat-send" id="chat-send" title="Send" aria-label="Send" disabled><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4 20-7z"/></svg></button>
+      </form>
+    </section>
+    </div>
+  </main>
+
+  <!-- Right column: the changes above the node's details; each takes the
+       whole height when alone, half of it when both are shown. -->
+  <div id="side" class="side">
+    <nav id="changes" class="entries changes" hidden aria-label="Changes against a target branch">
+      <div class="ch-head">
+        <button type="button" id="ch-toggle" class="entries-head" aria-expanded="true" title="Collapse the list">
+          Changes<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
+        </button>
+      </div>
+      <div class="ch-body">
+        <p id="ch-summary" class="ch-summary"></p>
+        <ul id="ch-alerts" class="ch-alerts" aria-label="Alerts"></ul>
+        <button type="button" id="ch-show" class="btn ch-show" hidden>Show all the changes</button>
+        <ul id="ch-list" class="ch-list"></ul>
+        <p id="ch-note" class="ch-note"></p>
+      </div>
+    </nav>
+  <aside id="panel" hidden>
+    <div class="panel-head">
+      <div>
+        <div id="p-kind" class="kind"></div>
+        <h2 id="p-name"></h2>
+      </div>
+      <button class="icon" id="p-close" aria-label="Close panel">×</button>
+    </div>
+    <div class="panel-body">
+    <div class="panel-actions">
+      <button class="btn primary" id="p-open">Open in IDE</button>
+      <button class="btn" id="p-center" title="Replace the graph with this node's neighbourhood (double-click)">Center here</button>
+      <button class="btn" id="p-expand">Expand</button>
+    </div>
+    <dl class="facts">
+      <dt>File</dt><dd><span id="p-path" class="mono path"></span> <button class="link" id="p-copy">copy</button></dd>
+      <dt id="p-origin-dt" hidden>Origin</dt><dd id="p-origin" hidden></dd>
+      <dt id="p-members-dt" hidden>Members called</dt><dd id="p-members" class="mono" hidden></dd>
+      <dt>Lines</dt><dd id="p-lines" class="mono"></dd>
+      <dt>Complexity</dt><dd id="p-cc" class="mono"></dd>
+      <dt>Hidden</dt><dd id="p-hidden"></dd>
+    </dl>
+    <section>
+      <h3>Called by <span id="p-in-count" class="count"></span></h3>
+      <h3>Calls <span id="p-out-count" class="count"></span></h3>
+    </section>
+    <section>
+      <h3>Source</h3>
+      <pre id="p-source" class="source"></pre>
+    </section>
+    </div>
+  </aside>
+  </div>
+
+  <div id="ctx" class="ctx" hidden>
+    <button data-act="open">Open in IDE</button>
+    <button data-act="expand">Add neighbours (click)</button>
+    <button data-act="center">Center here (double-click)</button>
+    <button data-act="copy">Copy path:line</button>
+  </div>
+
+  <dialog id="about" class="about" aria-labelledby="about-title">
+    <div class="logo-mark about-logo" aria-hidden="true"></div>
+    <h2 id="about-title">Code Visualizer</h2>
+    <p class="about-version">Version <span id="about-version" class="mono">—</span></p>
+    <p>The dependencies of your code, in a graph linked to your IDE.</p>
+    <dl class="about-credits">
+      <dt>Author</dt>
+      <dd>Poly Sok · <a href="https://github.com/polysok/code-visualizer" target="_blank" rel="noopener">github.com/polysok/code-visualizer</a></dd>
+      <dt>Based on</dt>
+      <dd><a href="https://github.com/CodeGraphContext/CodeGraphContext" target="_blank" rel="noopener">CodeGraphContext</a>, by Shashank Shekhar Singh and its contributors (MIT)</dd>
+      <dt>Built with</dt>
+      <dd>tree-sitter (parsing), LadybugDB (graph database), D3.js (drawing), fastembed (local search), JetBrains Mono (font, SIL OFL 1.1)</dd>
+      <dt>License</dt>
+      <dd>MIT</dd>
+    </dl>
+    <menu><button type="button" class="btn" id="about-close">Close</button></menu>
+  </dialog>
+
+  <dialog id="sources" aria-labelledby="sources-title">
+    <h2 id="sources-title">Sources of the graph</h2>
+    <p class="hint">Repositories or folders indexed together with <b id="src-main-name"></b>:
+      its calls into their code become real links (calls, inheritance, open in the IDE).
+      The list stays on this machine, in <span class="mono">.code-visualizer/companions.json</span>.</p>
+    <ul id="src-list" class="src-list"></ul>
+    <form id="src-add" class="src-add" autocomplete="off">
+      <input id="src-path" class="mono" placeholder="Path of a repository or folder (absolute, or ../Name)" aria-label="Path of a repository or folder to add">
+      <button class="btn" id="src-add-btn" type="submit">Add</button>
+    </form>
+    <p id="src-error" class="hint warn" hidden></p>
+    <div id="src-suggest" class="src-suggest" hidden>
+      <span class="hint">Next to this repository:</span>
+      <span id="src-suggest-list"></span>
+    </div>
+    <div id="src-pending" class="src-pending" hidden>
+      <span id="src-pending-text">The graph does not include these changes yet.</span>
+      <button type="button" class="btn primary" id="src-reindex">Re-index now</button>
+    </div>
+    <div id="src-progress" class="src-progress" hidden>
+      <span id="src-progress-text">Re-indexing…</span>
+      <progress id="src-progress-bar" max="1" value="0"></progress>
+    </div>
+    <menu><button type="button" class="btn" id="src-close">Close</button></menu>
+  </dialog>
+
+  <dialog id="settings">
+    <form method="dialog" id="settings-form">
+      <h2>Settings</h2>
+      <div class="segmented tabs" role="tablist">
+        <button type="button" class="btn active" role="tab" data-tab="general" aria-selected="true">General</button>
+        <button type="button" class="btn" role="tab" data-tab="ai" aria-selected="false">AI search</button>
+      </div>
+      <div class="tab-pane" data-pane="general">
+      <fieldset class="graph-opts">
+        <legend>Graph <small>(applied immediately)</small></legend>
+        <div class="row">
+          <span class="row-label"><label for="depth">Depth</label></span>
+          <input type="range" id="depth" min="1" max="5" value="1">
+          <span id="depth-value" class="mono">1</span>
+        </div>
+        <div class="row" role="group" aria-label="Relations">
+          <span class="row-label">Relations</span>
+          <label class="chk"><input type="checkbox" id="kind-calls" checked> Calls</label>
+          <label class="chk"><input type="checkbox" id="kind-inherits" checked> Inheritance</label>
+          <label class="chk"><input type="checkbox" id="kind-imports"> Imports</label>
+          <label class="chk" title="Calls resolved by name only (dashed). Uncheck to hide them and the nodes reached only through them."><input type="checkbox" id="kind-heuristic" checked> Heuristic <span id="heuristic-count"></span></label>
+        </div>
+        <div class="row" role="group" aria-label="Show">
+          <span class="row-label">Show</span>
+          <label class="chk" title="Types of the language's base library (String, Task, ILogger…). Unchecked: left out of the graph."><input type="checkbox" id="kind-framework"> Framework types <span id="framework-count"></span></label>
+          <label class="chk" title="Test code and test-only packages (Moq, xunit…). Always shown around a test."><input type="checkbox" id="kind-tests" checked> Tests <span id="tests-count"></span></label>
+        </div>
+      </fieldset>
+      <label>Theme
+        <select id="s-theme">
+          <option value="system">System</option>
+          <option value="light">Light</option>
+          <option value="dark">Dark</option>
+        </select>
+      </label>
+      <label>IDE
+        <select id="s-ide">
+          <option value="vscode">VS Code</option>
+          <option value="cursor">Cursor</option>
+          <option value="rider">JetBrains Rider</option>
+          <option value="idea">IntelliJ IDEA</option>
+          <option value="zed">Zed</option>
+        </select>
+      </label>
+      <label>Open with
+        <select id="s-method">
+          <option value="auto">Automatic (URL for VS Code, Cursor, Zed; command line for JetBrains)</option>
+          <option value="url">IDE URL handler (vscode://, zed://, custom template)</option>
+          <option value="server">Command line, launched by the CViz server</option>
+        </select>
+      </label>
+      <label>Custom URL template <small>({path}, {line}; empty = default)</small>
+        <input id="s-template" placeholder="e.g. jetbrains://rider/navigate/reference?path={path}:{line}">
+      </label>
+      <label>Path mapping <small>(one rule per line: <span class="mono">indexed/prefix=local/prefix</span>)</small>
+        <textarea id="s-pathmap" rows="3" placeholder="/srv/build/repo=/Users/me/repo"></textarea>
+      </label>
+      <label>API key <small>(only when the server is not on this machine)</small>
+        <input id="s-apikey" type="password" autocomplete="off">
+      </label>
+      </div>
+
+      <div class="tab-pane" data-pane="ai" hidden>
+        <p class="hint">Stored in the CViz configuration of the server machine (<span class="mono">~/.code-visualizer/.env</span>), also used by <span class="mono">cviz index</span> and <span class="mono">cviz watch</span>. Keys are never sent back to the page.</p>
+        <p id="ai-readonly" class="hint warn" hidden>These settings can only be changed from the machine running the server.</p>
+
+        <fieldset class="ai-block">
+          <legend>Embeddings <small>(search by meaning)</small></legend>
+          <label>Provider
+            <select id="ai-embed-provider">
+              <option value="local">Local model (fastembed, nothing leaves this machine)</option>
+              <option value="openai">OpenAI-compatible server (LM Studio, Ollama, OpenAI…)</option>
+            </select>
+          </label>
+          <div class="ai-remote" data-for="embed">
+            <label>Server URL <input id="ai-embed-url" placeholder="http://127.0.0.1:1234" autocomplete="off"></label>
+            <label>API key <input id="ai-embed-key" type="password" autocomplete="off" placeholder="none"></label>
+          </div>
+          <label>Model
+            <span class="row-inline">
+              <input id="ai-embed-model" list="ai-embed-models" autocomplete="off" placeholder="Xenova/multilingual-e5-small">
+              <button type="button" class="btn" id="ai-embed-load" data-target="embed">Load models</button>
+            </span>
+            <datalist id="ai-embed-models"></datalist>
+          </label>
+          <label class="chk"><input type="checkbox" id="ai-enabled"> Keep the vectors up to date (at <span class="mono">cviz graph</span> start-up and on every save)</label>
+          <div class="ai-status">
+            <span id="ai-embed-state">—</span>
+            <button type="button" class="btn" id="ai-embed-run">Vectorize now</button>
+          </div>
+          <progress id="ai-embed-progress" max="1" value="0" hidden></progress>
+        </fieldset>
+
+        <fieldset class="ai-block">
+          <legend>LLM <small>(re-ranks the results, answers questions; optional)</small></legend>
+          <label>Provider
+            <select id="ai-llm-provider">
+              <option value="lmstudio">LM Studio</option>
+              <option value="ollama">Ollama</option>
+              <option value="other">Other (OpenAI-compatible)</option>
+            </select>
+          </label>
+          <label>Server URL <input id="ai-llm-url" placeholder="http://127.0.0.1:1234" autocomplete="off"></label>
+          <label>API key <input id="ai-llm-key" type="password" autocomplete="off" placeholder="none"></label>
+          <label>Model <small>(empty: no LLM, the chat shows the search results)</small>
+            <span class="row-inline">
+              <input id="ai-llm-model" list="ai-llm-models" autocomplete="off" placeholder="e.g. gemma-4-12b-it">
+              <button type="button" class="btn" id="ai-llm-load" data-target="llm">Load models</button>
+            </span>
+            <datalist id="ai-llm-models"></datalist>
+          </label>
+        </fieldset>
+      </div>
+      <menu>
+        <button class="btn" value="cancel">Cancel</button>
+        <button class="btn primary" id="s-save" value="save">Save</button>
+      </menu>
+    </form>
+  </dialog>
+
+  <script src="/graph-assets/graph.js"></script>
+</body>
+</html>

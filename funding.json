@@ -1,0 +1,56 @@
+{
+  "$schema": "https://fundingjson.org/schema/v1.1.0.json",
+  "version": "v1.1.0",
+  "entity": {
+    "type": "individual",
+    "role": "maintainer",
+    "name": "Poly Sok",
+    "email": "TODO@personal.email",
+    "description": "I build and maintain Code Visualizer, a free, MIT-licensed tool that shows how the code of a repository depends on itself, on other repositories and on its packages, and gives AI coding assistants the same view. It runs entirely on the developer's machine.",
+    "webpageUrl": {
+      "url": "https://github.com/polysok"
+    }
+  },
+  "projects": [
+    {
+      "guid": "code-visualizer",
+      "name": "Code Visualizer",
+      "description": "Code Visualizer indexes a repository with tree-sitter into a local graph database and opens, from the IDE, an interactive page of the dependencies of the function or class under the cursor: callers, callees, inheritance, imports, and the packages or DLLs each call goes to. It works from a plain clone, without building the code or restoring its packages, including C#/.NET solutions whose NuGet types it attributes to their packages. Other repositories can be indexed with the main one to follow calls across them. An MCP server exposes the graph to AI assistants (search, dependency traversal, code reading), and a chat searches the code with a local embedding model. Nothing leaves the machine. It is a fork of CodeGraphContext, MIT-licensed and developed in public.",
+      "webpageUrl": {
+        "url": "https://github.com/polysok/code-visualizer"
+      },
+      "repositoryUrl": {
+        "url": "https://github.com/polysok/code-visualizer"
+      },
+      "licenses": [
+        "spdx:MIT"
+      ],
+      "tags": [
+        "developer-tools",
+        "open-source",
+        "code-analysis",
+        "dependency-graph",
+        "dotnet",
+        "ai-agents",
+        "mcp",
+        "local-first"
+      ]
+    }
+  ],
+  "funding": {
+    "channels": [
+      {
+        "guid": "github-sponsors",
+        "type": "payment-provider",
+        "address": "https://github.com/sponsors/polysok",
+        "description": "GitHub Sponsors profile of the maintainer."
+      },
+      {
+        "guid": "grant-bank-transfer",
+        "type": "bank",
+        "description": "For a grant or a company sponsorship, ask the maintainer by email for banking details. None are published here."
+      }
+    ],
+    "plans": []
+  }
+}

@@ -1,0 +1,29 @@
+<!--
+  Code Visualizer External Tool for JetBrains Rider (works in any JetBrains IDE).
+
+  Prefer `cviz ide jetbrains`: it installs this file in every JetBrains IDE found,
+  with the absolute path of cviz-open. Manual installation below.
+
+  Install: copy this file to the IDE's "tools" configuration directory, then restart:
+    macOS   ~/Library/Application Support/JetBrains/Rider<version>/tools/CViz.xml
+    Windows %APPDATA%\JetBrains\Rider<version>\tools\CViz.xml
+    Linux   ~/.config/JetBrains/Rider<version>/tools/CViz.xml
+  Or create it by hand: Settings > Tools > External Tools > + (same values as below).
+
+  If the IDE is launched from the Dock/Start menu it may not see your shell PATH:
+  replace "cviz-open" with the absolute path printed by `which cviz-open` (macOS/Linux)
+  or `where cviz-open` (Windows).
+-->
+<toolSet name="CViz">
+  <tool name="Open in Dependency Graph"
+        description="Show the artifact under the caret in the CViz dependency graph"
+        showInMainMenu="true" showInEditor="true" showInProject="true" showInSearchPopup="true"
+        disabled="false" useConsole="false" showConsoleOnStdOut="false" showConsoleOnStdErr="true"
+        synchronizeAfterRun="false">
+    <exec>
+      <option name="COMMAND" value="cviz-open" />
+      <option name="PARAMETERS" value="&quot;$FilePath$:$LineNumber$&quot; --ide rider" />
+      <option name="WORKING_DIRECTORY" value="$ProjectFileDir$" />
+    </exec>
+  </tool>
+</toolSet>

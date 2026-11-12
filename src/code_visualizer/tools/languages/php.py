@@ -1,0 +1,687 @@
+# src/code_visualizer/tools/languages/php.py
+from pathlib import Path
+from typing import Any, Dict, Optional, Tuple
+import re
+from code_visualizer.utils.debug_log import debug_log, info_logger, error_logger, warning_logger
+from code_visualizer.utils.tree_sitter_manager import execute_query
+
+# Reference: https://github.com/tree-sitter/tree-sitter-php/blob/master/queries/tags.scm
+PHP_QUERIES = {
+    "functions": """
+        (function_definition
+            name: (name) @name
+            parameters: (formal_parameters) @params
+        ) @function_node
+
+        (method_declaration
+            name: (name) @name
+            parameters: (formal_parameters) @params
+        ) @function_node
+    """,
+    "classes": """
+        (class_declaration
+            name: (name) @name
+        ) @class
+        
+        (interface_declaration
+            name: (name) @name
+        ) @interface
+        
+        (trait_declaration
+            name: (name) @name
+        ) @trait
+
+        (enum_declaration
+            name: (name) @name
+        ) @enum
+    """,
+    # A top-level `use App\Models\User;` is a `namespace_use_declaration`.
+    # `use_declaration` is the *trait* use inside a class body (relied on at
+    # ~line 309), so capturing it here dropped every real import and labelled
+    # trait uses as imports instead.
+    #
+    # Capture the clause rather than the declaration: it is the level that
+    # exists once per imported symbol, so the braced group form
+    # `use Foo\{A, B as C};` yields one row per symbol for free.
+    "imports": """
+        (namespace_use_clause) @import
+    """,
+    "calls": """
+        (function_call_expression
+            function: [
+                (qualified_name) @name
+                (name) @name
+            ]
+        ) @call_node
+        
+        (member_call_expression
+            name: [
+                (name) @name
+                (variable_name) @dynamic_method
+            ]
+        ) @call_node
+        
+        (scoped_call_expression
+            name: (name) @name
+        ) @call_node
+        
+        (object_creation_expression) @call_node
+    """,
+    "variables": """
+        (variable_name) @variable
+    """,
+}
+
+class PhpTreeSitterParser:
+    def __init__(self, generic_parser_wrapper: Any):
+        self.generic_parser_wrapper = generic_parser_wrapper
+        self.language_name = "php"
+        self.language = generic_parser_wrapper.language
+        self.parser = generic_parser_wrapper.parser
+
+    def parse(self, path: Path, is_dependency: bool = False, index_source: bool = False) -> Dict[str, Any]:
+        try:
+            self.index_source = index_source
+            with open(path, 'r', encoding='utf-8', errors='ignore') as f:
+                source_code = f.read()
+
+            if not source_code.strip():
+                warning_logger(f"Empty or whitespace-only file: {path}")
+                return {
+                    "path": str(path),
+                    "functions": [],
+                    "classes": [],
+                    "interfaces": [],
+                    "traits": [],
+                    "variables": [],
+                    "imports": [],
+                    "function_calls": [],
+                    "is_dependency": is_dependency,
+                    "lang": self.language_name,
+                }
+
+            tree = self.parser.parse(bytes(source_code, "utf8"))
+
+            parsed_functions = []
+            parsed_classes = []
+            parsed_interfaces = []
+            parsed_traits = []
+            parsed_variables = []
+            parsed_imports = []
+            parsed_calls = []
+            var_type_map = {}
+
+            for capture_name in ["functions", "classes", "imports", "variables", "calls"]:
+                query = PHP_QUERIES[capture_name]
+                results = execute_query(self.language, query, tree.root_node)
+
+                if capture_name == "functions":
+                    parsed_functions = self._parse_functions(results, source_code, path, var_type_map)
+                elif capture_name == "classes":
+                    parsed_classes, parsed_interfaces, parsed_traits = self._parse_types(results, source_code, path)
+                elif capture_name == "imports":
+                    parsed_imports = self._parse_imports(results, source_code)
+                elif capture_name == "calls":
+                    parsed_calls = self._parse_calls(results, source_code, var_type_map)
+                elif capture_name == "variables":
+                    parsed_variables = self._parse_variables(results, source_code, path, var_type_map)
+
+            return {
+                "path": str(path),
+                "functions": parsed_functions,
+                "classes": parsed_classes,
+                "interfaces": parsed_interfaces,
+                "traits": parsed_traits,
+                "variables": parsed_variables,
+                "imports": parsed_imports,
+                "function_calls": parsed_calls,
+                "is_dependency": is_dependency,
+                "lang": self.language_name,
+            }
+
+        except Exception as e:
+            error_logger(f"Error parsing PHP file {path}: {e}")
+            return {
+                "path": str(path),
+                "functions": [],
+                "classes": [],
+                "interfaces": [],
+                "traits": [],
+                "variables": [],
+                "imports": [],
+                "function_calls": [],
+                "is_dependency": is_dependency,
+                "lang": self.language_name,
+            }
+
+    def _get_parent_context(self, node: Any) -> Tuple[Optional[str], Optional[str], Optional[int]]:
+        curr = node.parent
+        while curr:
+            if curr.type in ("function_definition", "method_declaration", "class_declaration", "interface_declaration", "trait_declaration", "enum_declaration"):
+                name_node = curr.child_by_field_name("name")
+                return (
+                    self._get_node_text(name_node) if name_node else None,
+                    curr.type,
+                    # Name-node line: attributed declarations start at their
+                    # #[Attribute], and consumers join this against the
+                    # declaration's line_number (#1660).
+                    (name_node.start_point[0] + 1) if name_node else (curr.start_point[0] + 1),
+                )
+            curr = curr.parent
+        return None, None, None
+
+    def _get_enclosing_class_name(self, node: Any) -> Optional[str]:
+        curr = node.parent
+        while curr:
+            if curr.type in ("class_declaration", "interface_declaration", "trait_declaration", "enum_declaration"):
+                name_node = curr.child_by_field_name("name")
+                return self._get_node_text(name_node) if name_node else None
+            curr = curr.parent
+        return None
+
+    def _get_enclosing_class(self, node: Any) -> Optional[Tuple[str, int]]:
+        """(name, line) of the enclosing class-like declaration, or None.
+
+        Calls previously emitted TWO shapes for class_context — a bare string
+        for ordinary calls and a dead (None, None) tuple for `new X()` (the
+        parent-context type is the enclosing *function*, never a class) — so
+        the tuple-consuming resolution paths never fired for PHP (#1538).
+        """
+        curr = node.parent
+        while curr:
+            if curr.type in ("class_declaration", "interface_declaration", "trait_declaration", "enum_declaration"):
+                name_node = curr.child_by_field_name("name")
+                name = self._get_node_text(name_node) if name_node else None
+                return (name, name_node.start_point[0] + 1) if name else None
+            curr = curr.parent
+        return None
+
+    def _get_node_text(self, node: Any) -> str:
+        if not node: return ""
+        return node.text.decode("utf-8")
+
+    def _parse_trait_method_map(self, class_source: str) -> Dict[str, Tuple[str, str]]:
+        """Map callable names to (trait, method) from PHP use-trait conflict blocks."""
+        method_map: Dict[str, Tuple[str, str]] = {}
+        use_match = re.search(
+            r"use\s+([\w\\,\s]+)\s*\{([^}]+)\}",
+            class_source,
+            re.DOTALL,
+        )
+        if not use_match:
+            return method_map
+        body = use_match.group(2)
+        for alias_match in re.finditer(
+            r"([\w\\]+)::(\w+)\s+as\s+(\w+)\s*;",
+            body,
+        ):
+            trait, method, alias = alias_match.groups()
+            method_map[alias] = (trait.split("\\")[-1], method)
+        for instead_match in re.finditer(
+            r"([\w\\]+)::(\w+)\s+insteadof\s+([\w\\,\s]+)\s*;",
+            body,
+        ):
+            trait, method, losers = instead_match.groups()
+            trait_name = trait.split("\\")[-1]
+            method_map[method] = (trait_name, method)
+            for loser in re.findall(r"[\w\\]+", losers):
+                loser_name = loser.split("\\")[-1]
+                if loser_name != trait_name:
+                    method_map.setdefault(method, (trait_name, method))
+        return method_map
+
+    def _parse_functions(self, captures: list, source_code: str, path: Path, var_type_map: dict) -> list[Dict[str, Any]]:
+        functions = []
+        seen_nodes = set()
+
+        for node, capture_name in captures:
+            if capture_name == "function_node":
+                node_id = (node.start_byte, node.end_byte, node.type)
+                if node_id in seen_nodes:
+                    continue
+                seen_nodes.add(node_id)
+                
+                try:
+                    start_line = node.start_point[0] + 1
+                    end_line = node.end_point[0] + 1
+                    
+                    name_node = node.child_by_field_name("name")
+                    if name_node:
+                        func_name = self._get_node_text(name_node)
+                        # #[Attribute] lines are part of the declaration node,
+                        # so node.start_point is the attribute line; report the
+                        # declaration proper (python/csharp/kotlin convention,
+                        # #1660).
+                        start_line = name_node.start_point[0] + 1
+                        
+                        params_node = node.child_by_field_name("parameters")
+                        parameters = []
+                        if params_node:
+                            # PHP parameters: function($a, $b)
+                            for child in params_node.children:
+                                if child.type == "variable_name":
+                                    var_node = child
+                                    type_node = None
+                                elif child.type in (
+                                    "simple_parameter",
+                                    "property_promotion_parameter",
+                                    "variadic_parameter",
+                                ):
+                                    var_node = child.child_by_field_name("name")
+                                    type_node = child.child_by_field_name("type")
+                                else:
+                                    continue
+
+                                if var_node:
+                                    var_name = self._get_node_text(var_node)
+                                    parameters.append(var_name)
+                                    if type_node:
+                                        var_type = self._get_node_text(type_node)
+                                        # Extract actual type from union/nullable types
+                                        var_type = var_type.lstrip("?").split("|")[0].strip()
+                                        var_type_map[(func_name, var_name)] = var_type
+
+                        source_text = self._get_node_text(node)
+                        
+                        # Get class context
+                        context_name, context_type, context_line = self._get_parent_context(node)
+
+                        func_data = {
+                            "name": func_name,
+                            "parameters": parameters,
+                            "line_number": start_line,
+                            "end_line": end_line,
+                            "path": str(path),
+                            "lang": self.language_name,
+                            "context": context_name,
+                            "context_type": context_type,
+                            "class_context": context_name if context_type and ("class" in context_type or "interface" in context_type or "trait" in context_type or "enum" in context_type) else None
+                        }
+                        
+                        if self.index_source:
+                            func_data["source"] = source_text
+                        
+                        functions.append(func_data)
+                        
+                except Exception as e:
+                    error_logger(f"Error parsing function in {path}: {e}")
+                    continue
+
+        return functions
+
+    def _parse_types(self, captures: list, source_code: str, path: Path) -> Tuple[list, list, list]:
+        classes = []
+        interfaces = []
+        traits = []
+        seen_nodes = set()
+
+        for node, capture_name in captures:
+            if capture_name in ("class", "interface", "trait", "enum"):
+                node_id = (node.start_byte, node.end_byte, node.type)
+                if node_id in seen_nodes:
+                    continue
+                seen_nodes.add(node_id)
+                
+                try:
+                    start_line = node.start_point[0] + 1
+                    end_line = node.end_point[0] + 1
+                    
+                    name_node = node.child_by_field_name("name")
+                    if name_node:
+                        type_name = self._get_node_text(name_node)
+                        # Same convention as functions: attributes are children
+                        # of the declaration node (#1660).
+                        start_line = name_node.start_point[0] + 1
+                        source_text = self._get_node_text(node)
+                        
+                        bases = []
+                        # base_clause and class_interface_clause are NOT
+                        # field-named children in tree-sitter-php, so
+                        # child_by_field_name() returns None. We must
+                        # iterate node.children and match by .type.
+                        for child in node.children:
+                            if child.type == 'base_clause':  # extends
+                                for sub in child.children:
+                                    if sub.type in ('name', 'qualified_name'):
+                                        bases.append(self._get_node_text(sub))
+                            elif child.type == 'class_interface_clause':  # implements
+                                for sub in child.children:
+                                    if sub.type in ('name', 'qualified_name', 'name_list'):
+                                        if sub.type == 'name_list':
+                                            for name_child in sub.children:
+                                                if name_child.type in ('name', 'qualified_name'):
+                                                    bases.append(self._get_node_text(name_child))
+                                        else:
+                                            bases.append(self._get_node_text(sub))
+                            elif child.type == 'declaration_list':
+                                for member in child.children:
+                                    if member.type == 'use_declaration':
+                                        for specifier in member.children:
+                                            if specifier.type in ('name', 'qualified_name'):
+                                                bases.append(self._get_node_text(specifier))
+
+                        trait_method_map = {}
+                        if capture_name == "class":
+                            trait_method_map = self._parse_trait_method_map(source_text)
+
+                        type_data = {
+                            "name": type_name,
+                            "line_number": start_line,
+                            "end_line": end_line,
+                            "bases": bases,
+                            "path": str(path),
+                            "lang": self.language_name,
+                            "trait_method_map": trait_method_map,
+                        }
+                        if self.index_source:
+                            type_data["source"] = source_text
+                        
+                        if capture_name == "class":
+                            classes.append(type_data)
+                        elif capture_name == "interface":
+                            interfaces.append(type_data)
+                        elif capture_name == "trait":
+                            traits.append(type_data)
+                        elif capture_name == "enum":
+                            # PHP 8.1 enums are class-likes: without this arm
+                            # the captured row was silently dropped and enum
+                            # methods became orphans (#1538).
+                            type_data["node_type"] = "enum"
+                            classes.append(type_data)
+                        
+                except Exception as e:
+                    error_logger(f"Error parsing type in {path}: {e}")
+                    continue
+
+        return classes, interfaces, traits
+
+    def _parse_variables(self, captures: list, source_code: str, path: Path, var_type_map: dict) -> list[Dict[str, Any]]:
+        variables = []
+        seen_vars = set()
+        
+        for node, capture_name in captures:
+            if capture_name == "variable":
+                try:
+                     var_name = self._get_node_text(node)
+                     start_line = node.start_point[0] + 1
+                     
+                     start_byte = node.start_byte
+                     if start_byte in seen_vars:
+                         continue
+                     seen_vars.add(start_byte)
+                     
+                     ctx_name, ctx_type, ctx_line = self._get_parent_context(node)
+
+                     # Infer type from assignment
+                     inferred_type = "mixed"
+                     parent = node.parent
+                     if parent and parent.type == 'assignment_expression':
+                         # $var = new Class();
+                         left = parent.child_by_field_name('left')
+                         right = parent.child_by_field_name('right')
+                         
+                         # Ensure we are looking at the left side variable
+                         if left == node and right and right.type == 'object_creation_expression':
+                             # Extract class name from right side
+                             for child in right.children:
+                                 if child.type in ('name', 'qualified_name'):
+                                     inferred_type = self._get_node_text(child)
+                                     var_type_map[(ctx_name, var_name)] = inferred_type
+                                     break
+                                     
+                     variables.append({
+                        "name": var_name,
+                        "type": inferred_type,
+                        "line_number": start_line,
+                        "path": str(path),
+                        "lang": self.language_name,
+                        "context": ctx_name,
+                        "class_context": ctx_name if ctx_type and ("class" in ctx_type or "interface" in ctx_type or "trait" in ctx_type or "enum" in ctx_type) else None
+                     })
+                except Exception as e:
+                    continue
+
+        return variables
+
+    def _parse_imports(self, captures: list, source_code: str) -> list[dict]:
+        imports = []
+        
+        for node, capture_name in captures:
+            if capture_name == "import":
+                try:
+                    # `namespace_use_clause` shapes, in tree-sitter-php:
+                    #   App\Models\User          -> qualified_name
+                    #   App\Models\Post as Blog  -> qualified_name, name(alias)
+                    #   A                        -> name                 (group member)
+                    #   B as C                   -> name, name(alias)    (group member)
+                    #   function Bar\helper      -> qualified_name, with a
+                    #                               leading `function`/`const` token
+                    #
+                    # The alias, when present, is always the final `name` child.
+                    path_node = None
+                    alias = None
+                    name_children = []
+
+                    for child in node.children:
+                        if child.type == "qualified_name":
+                            path_node = child
+                        elif child.type == "name":
+                            name_children.append(child)
+
+                    if path_node is not None:
+                        # qualified_name carries the path; a trailing bare name
+                        # is therefore the alias.
+                        import_path = self._get_node_text(path_node)
+                        if name_children:
+                            alias = self._get_node_text(name_children[-1])
+                    elif name_children:
+                        # Group member: first name is the symbol, second (if
+                        # any) is its alias.
+                        import_path = self._get_node_text(name_children[0])
+                        if len(name_children) > 1:
+                            alias = self._get_node_text(name_children[-1])
+                    else:
+                        continue
+
+                    # A braced group prefixes its members: `use Foo\{A, B};`
+                    # means Foo\A and Foo\B. Walk up to recover the prefix so
+                    # the recorded path is the real fully-qualified name.
+                    group = node.parent
+                    if group is not None and group.type == "namespace_use_group":
+                        decl = group.parent
+                        if decl is not None:
+                            # The prefix is a `namespace_name` sibling of the
+                            # group (`use Foo\Bar\{A, B};` -> "Foo\Bar").
+                            prefix_parts = [
+                                self._get_node_text(c)
+                                for c in decl.children
+                                if c.type in ("namespace_name", "qualified_name", "name")
+                            ]
+                            if prefix_parts:
+                                import_path = (
+                                    prefix_parts[0].rstrip("\\") + "\\" + import_path
+                                )
+
+                    import_path = import_path.strip()
+                    if not import_path:
+                        continue
+
+                    import_data = {
+                        # `name` is the symbol as referenced in code — the last
+                        # segment, or the alias when one is given.
+                        "name": alias or import_path.split("\\")[-1],
+                        "full_import_name": import_path,
+                        "line_number": node.start_point[0] + 1,
+                        "alias": alias,
+                        "context": (None, None),
+                        "lang": self.language_name,
+                        "is_dependency": False,
+                    }
+                    imports.append(import_data)
+                except Exception as e:
+                    error_logger(f"Error parsing import: {e}")
+                    continue
+
+        # Query captures arrive in match order, not source order; sort so the
+        # emitted rows are deterministic across runs.
+        imports.sort(key=lambda i: (i["line_number"], i["full_import_name"]))
+        return imports
+
+    def _parse_calls(self, captures: list, source_code: str, var_type_map: dict) -> list[dict]:
+        calls = []
+        seen_calls = set()
+        
+        for node, capture_name in captures:
+            # For object_creation_expression without @name capture on inner node, we catch the whole node as @call_node
+            # But the 'calls' query uses @name for function/method calls on the identifier, and @call_node for full expression.
+            # My query change: (object_creation_expression) @call_node
+            # This means for obj creation, I won't get a separate @name capture. I need to iterate @call_node captures too?
+            # actually execute_query returns (node, capture_name).
+            
+            # Let's handle 'name' capture which gives us the function name
+            if capture_name in ("name", "dynamic_method"):
+                try:
+                    call_name = self._get_node_text(node)
+                    line_number = node.start_point[0] + 1
+                    is_dynamic_method = capture_name == "dynamic_method"
+                    
+                    # Ensure we identify the full call node
+                    call_node = node.parent
+                    while call_node and call_node.type not in ("function_call_expression", "member_call_expression", "scoped_call_expression"):
+                        call_node = call_node.parent
+                    
+                    if not call_node:
+                         continue # It might be a name inside object creation or something we handle otherwise
+
+                    # Avoid duplicates
+                    call_key = f"{call_node.start_byte}_{call_node.end_byte}"
+                    if call_key in seen_calls:
+                        continue
+                    seen_calls.add(call_key)
+                    
+                    # Extract arguments
+                    args = []
+                    args_node = call_node.child_by_field_name('arguments')
+                    if args_node:
+                        for arg in args_node.children:
+                            if arg.type not in ('(', ')', ','):
+                                args.append(self._get_node_text(arg))
+
+                    full_name = call_name # Default
+                    inferred_obj_type = None
+                    ctx_name, ctx_type, ctx_line = self._get_parent_context(node)
+
+                    if call_node.type == 'member_call_expression':
+                        # $obj->method()
+                        obj_node = call_node.child_by_field_name('object')
+                        if obj_node:
+                             receiver = self._get_node_text(obj_node)
+                             full_name = f"{receiver}.{call_name}"
+                             if receiver.startswith("$"):
+                                 inferred_obj_type = var_type_map.get((ctx_name, receiver))
+                        if is_dynamic_method:
+                            call_name = call_name.lstrip("$")
+                    elif call_node.type == 'scoped_call_expression':
+                         # Class::method()
+                        scope_node = call_node.child_by_field_name('scope')
+                        if scope_node:
+                            receiver = self._get_node_text(scope_node)
+                            full_name = f"{receiver}.{call_name}"
+                            inferred_obj_type = receiver
+
+                    call_data = {
+                        "name": call_name,
+                        "full_name": full_name,
+                        "line_number": line_number,
+                        "args": args,
+                        "inferred_obj_type": inferred_obj_type,
+                        "context": (ctx_name, ctx_type, ctx_line),
+                        "class_context": self._get_enclosing_class(node),
+                        "lang": self.language_name,
+                        "is_dependency": False,
+                    }
+                    if is_dynamic_method:
+                        call_data["call_kind"] = "dynamic_member"
+                    calls.append(call_data)
+                except Exception as e:
+                    error_logger(f"Error parsing call: {e}")
+                    continue
+
+            # Handle object creation separately as capture is on the whole node
+            elif capture_name == "call_node" and node.type == "object_creation_expression":
+                 try:
+                    line_number = node.start_point[0] + 1
+                    
+                    # Find class name (child not named 'arguments')
+                    class_name = "Unknown"
+                    for child in node.children:
+                        if child.type in ('name', 'qualified_name'):
+                            class_name = self._get_node_text(child)
+                            break
+                        if child.type == "variable_name": # dynamic new $class()
+                             class_name = self._get_node_text(child)
+                             break
+                    
+                    call_key = f"new {class_name}_{line_number}"
+                    if call_key in seen_calls:
+                        continue
+                    seen_calls.add(call_key)
+
+                    args = []
+                    args_node = node.child_by_field_name('arguments')
+                    if args_node:
+                         for arg in args_node.children:
+                            if arg.type not in ('(', ')', ','):
+                                args.append(self._get_node_text(arg))
+                    
+                    full_name = class_name # For GraphBuilder to link to Class
+                    
+                    ctx_name, ctx_type, ctx_line = self._get_parent_context(node)
+                    
+                    call_data = {
+                        "name": class_name,
+                        "full_name": full_name, # Usually we want the class name here so GB can link to Class node
+                        "line_number": line_number,
+                        "args": args,
+                        "inferred_obj_type": None,
+                        "context": (ctx_name, ctx_type, ctx_line),
+                        "class_context": self._get_enclosing_class(node),
+                        "lang": self.language_name,
+                        "is_dependency": False,
+                    }
+                    calls.append(call_data)
+                 except Exception:
+                     continue
+
+        return calls
+
+def pre_scan_php(files: list[Path], parser_wrapper) -> dict:
+    name_to_files = {}
+    for path in files:
+        try:
+            with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                content = f.read()
+            # Extract class, interface, trait, and function names
+            patterns = [
+                r"(?:class|interface|trait)\s+(\w+)",
+                r"function\s+(\w+)\s*\(",
+            ]
+            for pattern in patterns:
+                for match in re.finditer(pattern, content):
+                    name = match.group(1)
+                    if name not in name_to_files:
+                        name_to_files[name] = []
+                    name_to_files[name].append(str(path))
+            # Extract namespace for FQN mapping
+            ns_match = re.search(r"namespace\s+([\w\\]+)", content)
+            if ns_match:
+                namespace = ns_match.group(1)
+                for pattern in [r"(?:class|interface|trait)\s+(\w+)"]:
+                    for match in re.finditer(pattern, content):
+                        fqn = f"{namespace}\\{match.group(1)}"
+                        if fqn not in name_to_files:
+                            name_to_files[fqn] = []
+                        name_to_files[fqn].append(str(path))
+        except Exception:
+            pass
+    return name_to_files

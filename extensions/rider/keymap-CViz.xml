@@ -1,0 +1,12 @@
+<!--
+  Optional: binds Ctrl+Alt+G (Cmd+Alt+G on macOS) to the CViz External Tool.
+  Simplest route: Settings > Keymap > External Tools > CViz > Open in Dependency Graph
+  > Add Keyboard Shortcut. To share it as a file instead, copy this into the
+  IDE's "keymaps" directory (next to "tools") and select the "CViz" keymap; change
+  parent to "Mac OS X 10.5+" on macOS.
+-->
+<keymap version="1" name="CViz" parent="$default">
+  <action id="Tool_CViz_Open in Dependency Graph">
+    <keyboard-shortcut first-keystroke="ctrl alt G" />
+  </action>
+</keymap>

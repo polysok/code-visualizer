@@ -1,0 +1,267 @@
+{
+  "name": "code-visualizer-vscode",
+  "displayName": "Code Visualizer (CodeGraphContext fork)",
+  "description": "Dependency graph linked to VS Code, based on a fork of CodeGraphContext.",
+  "version": "0.9.8",
+  "publisher": "polysok",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/polysok/code-visualizer.git",
+    "directory": "extensions/vscode"
+  },
+  "bugs": { "url": "https://github.com/polysok/code-visualizer/issues" },
+  "homepage": "https://github.com/polysok/code-visualizer#readme",
+  "engines": {
+    "vscode": "^1.86.0"
+  },
+  "categories": [
+    "Other",
+    "Programming Languages"
+  ],
+  "keywords": ["code graph", "MCP", "call graph", "complexity", "code analysis", "dead code", "graph intelligence"],
+  "galleryBanner": { "color": "#1e1e2e", "theme": "dark" },
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "cviz.openDashboard",
+        "title": "CViz: Open Command Center"
+      },
+      {
+        "command": "cviz.showCallGraph",
+        "title": "CViz: Show Call Graph"
+      },
+      {
+        "command": "cviz.openInGraph",
+        "title": "CViz: Open in Dependency Graph (browser)"
+      },
+      {
+        "command": "cviz.analyzeRelationships",
+        "title": "CViz: Analyze Relationships"
+      },
+      {
+        "command": "cviz.refreshIndex",
+        "title": "CViz: Refresh Index"
+      },
+      {
+        "command": "cviz.openCypherConsole",
+        "title": "CViz: Open Cypher Console"
+      },
+      {
+        "command": "cviz.runIndexWizard",
+        "title": "CViz: Run Indexing Wizard"
+      },
+      {
+        "command": "cviz.openEngineConfig",
+        "title": "CViz: Open Engine Config"
+      },
+      {
+        "command": "cviz.showVariableImpact",
+        "title": "CViz: Show Variable Impact Radius"
+      },
+      {
+        "command": "cviz.showClassHierarchy",
+        "title": "CViz: Show Class Hierarchy"
+      },
+      {
+        "command": "cviz.generateReport",
+        "title": "CViz: Generate Code Health Report"
+      },
+      {
+        "command": "cviz.discoverContexts",
+        "title": "CViz: Discover Sub-Project Contexts"
+      },
+      {
+        "command": "cviz.visualizeRepo",
+        "title": "CViz: Visualize Entire Repo"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "cviz.openInGraph",
+          "when": "editorTextFocus",
+          "group": "cviz@0"
+        },
+        {
+          "command": "cviz.showCallGraph",
+          "when": "editorTextFocus && cviz:isFunction",
+          "group": "cviz@1"
+        },
+        {
+          "command": "cviz.analyzeRelationships",
+          "when": "editorTextFocus && cviz:isFunction",
+          "group": "cviz@2"
+        },
+        {
+          "command": "cviz.showVariableImpact",
+          "when": "editorTextFocus",
+          "group": "cviz@3"
+        },
+        {
+          "command": "cviz.showClassHierarchy",
+          "when": "editorTextFocus && cviz:isClass",
+          "group": "cviz@4"
+        },
+        {
+          "command": "cviz.generateReport",
+          "when": "editorTextFocus",
+          "group": "cviz@5"
+        }
+      ]
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "cviz-explorer",
+          "title": "Code Visualizer",
+          "icon": "media/cviz.svg"
+        }
+      ]
+    },
+    "views": {
+      "cviz-explorer": [
+        {
+          "id": "cviz-control",
+          "name": "CViz Control Panel",
+          "type": "webview",
+          "icon": "$(dashboard)"
+        },
+        {
+          "id": "cviz-bundles",
+          "name": "Bundles",
+          "icon": "$(package)"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Code Visualizer",
+      "properties": {
+        "cviz.executable": {
+          "type": "string",
+          "default": "cviz",
+          "description": "Path to the CViz executable."
+        },
+        "cviz.pythonPackagePath": {
+          "type": "string",
+          "default": "",
+          "description": "Optional CViz Python package path or uvx executable wrapper."
+        },
+        "cviz.repoPath": {
+          "type": "string",
+          "default": "",
+          "description": "Optional repository path override for CViz tools."
+        },
+        "cviz.maxDeadCodeDiagnostics": {
+          "type": "number",
+          "default": 100,
+          "description": "Maximum dead code diagnostics to render."
+        },
+        "cviz.complexityWarningThreshold": {
+          "type": "number",
+          "default": 10,
+          "description": "Complexity score above which warnings are emphasized."
+        },
+        "cviz.maxToolResponseTokens": {
+          "type": "number",
+          "default": 0,
+          "description": "Maximum tool response tokens (0 means unlimited)."
+        },
+        "cviz.indexVariables": {
+          "type": "boolean",
+          "default": true,
+          "description": "Index variable nodes in the code graph."
+        },
+        "cviz.ignoreDirs": {
+          "type": "string",
+          "default": "node_modules,venv,.venv,dist,build,__pycache__",
+          "description": "Comma-separated directories to exclude from indexing."
+        },
+        "cviz.parallelWorkers": {
+          "type": "number",
+          "default": 4,
+          "description": "Number of parallel indexing workers."
+        },
+        "cviz.enableAutoWatch": {
+          "type": "boolean",
+          "default": false,
+          "description": "Automatically watch directory after indexing."
+        },
+        "cviz.maxFileSizeMb": {
+          "type": "number",
+          "default": 10,
+          "description": "Maximum file size (MB) to include in indexing."
+        },
+        "cviz.ignoreTestFiles": {
+          "type": "boolean",
+          "default": false,
+          "description": "Skip test files during indexing."
+        },
+        "cviz.scipIndexer": {
+          "type": "boolean",
+          "default": false,
+          "description": "Use SCIP-based indexing for higher accuracy (requires scip-<lang> tools)."
+        },
+        "cviz.toolResultLimits": {
+          "type": "string",
+          "default": "{}",
+          "description": "JSON map of tool name to max result count, e.g. {\"find_code\": 20}."
+        },
+        "cviz.statusBarAlignment": {
+          "type": "string",
+          "default": "right",
+          "enum": ["left", "right"],
+          "description": "Which side of the VS Code status bar the CViz item appears on. Change this if the item conflicts with another extension."
+        },
+        "cviz.statusBarPriority": {
+          "type": "number",
+          "default": 1000,
+          "description": "Priority of the CViz status bar item. Higher values place the item further left within its alignment group. Adjust this to resolve layout conflicts with other extensions (issue #1118)."
+        },
+        "cviz.graphView": {
+          "type": "string",
+          "default": "web",
+          "enum": [
+            "web",
+            "panel"
+          ],
+          "enumDescriptions": [
+            "Open the standalone dependency-graph page in the browser (served by 'cviz graph').",
+            "Use the call-graph panel inside VS Code."
+          ],
+          "description": "Where 'CViz: Show Call Graph' (CodeLens, hover, context menu) opens the graph."
+        },
+        "cviz.graphServerUrl": {
+          "type": "string",
+          "default": "",
+          "description": "URL of a CViz graph server to always use. Empty (default): the server of the file's repository, found in ~/.code-visualizer/servers.json (each 'cviz graph' records itself there), started if needed."
+        }
+      }
+    },
+    "keybindings": [
+      {
+        "command": "cviz.openInGraph",
+        "key": "ctrl+alt+g",
+        "mac": "cmd+alt+g",
+        "when": "editorTextFocus"
+      }
+    ]
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "lint": "tsc -p ./ --noEmit",
+    "pretest": "npm run compile",
+    "test": "node --test out/testing/**/*.test.js",
+    "fetch-binary": "node scripts/fetch-binary.js",
+    "package:vsix": "npm run fetch-binary && npx @vscode/vsce package --allow-star-activation",
+    "vscode:prepublish": "npm run compile && npm run fetch-binary"
+  },
+  "devDependencies": {
+    "@vscode/vsce": "^3.6.1",
+    "@types/node": "^22.15.30",
+    "@types/vscode": "^1.86.0",
+    "typescript": "^5.8.3"
+  }
+}

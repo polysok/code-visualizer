@@ -1,0 +1,3 @@
+prune images
+recursive-include src/code_visualizer/viz/static *
+recursive-include vscode-extension *

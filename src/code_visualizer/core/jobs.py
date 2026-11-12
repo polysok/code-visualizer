@@ -1,0 +1,190 @@
+# src/code_visualizer/core/jobs.py
+"""
+This module defines the data structures and manager for handling long-running,
+background jobs, such as code indexing.
+"""
+import uuid
+import threading
+import traceback as traceback_module
+from datetime import datetime, timedelta
+from dataclasses import dataclass
+from enum import Enum
+from typing import Any, Dict, List, Optional
+from pathlib import Path
+
+
+MAX_TRACEBACK_CHARS = 32_768
+
+
+class JobStatus(Enum):
+    """Enumeration for the possible statuses of a background job."""
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+@dataclass
+class JobInfo:
+    """
+    A data class to hold all information about a single background job.
+    This makes it easy to track the job's progress, status, and results.
+    """
+    job_id: str
+    status: JobStatus
+    start_time: datetime
+    end_time: Optional[datetime] = None
+    total_files: int = 0
+    processed_files: int = 0
+    current_file: Optional[str] = None
+    status_message: Optional[str] = None
+    estimated_duration: Optional[float] = None
+    actual_duration: Optional[float] = None
+    errors: List[str] = None
+    result: Optional[Dict[str, Any]] = None
+    path: Optional[str] = None
+    is_dependency: bool = False
+    last_update_time: Optional[datetime] = None
+    error_type: Optional[str] = None
+    traceback: Optional[str] = None
+
+    def __post_init__(self):
+        """Ensures the errors list is initialized after the object is created."""
+        if self.errors is None:
+            self.errors = []
+
+    @property
+    def progress_percentage(self) -> float:
+        """Calculates the completion percentage of the job."""
+        if self.total_files == 0:
+            return 0.0
+        return (self.processed_files / self.total_files) * 100
+
+    @property
+    def estimated_time_remaining(self) -> Optional[float]:
+        """Calculates the estimated time remaining based on the average time per file."""
+        if self.status != JobStatus.RUNNING or self.processed_files == 0:
+            return None
+        elapsed = (datetime.now() - self.start_time).total_seconds()
+        avg_time_per_file = elapsed / self.processed_files
+        remaining_files = self.total_files - self.processed_files
+        return remaining_files * avg_time_per_file
+
+class JobManager:
+    """
+    A thread-safe manager for creating, updating, and retrieving information
+    about background jobs. It stores job information in memory.
+    """
+    def __init__(self):
+        self.jobs: Dict[str, JobInfo] = {}
+        self.lock = threading.Lock() # A lock to ensure thread-safe access to the jobs dictionary.
+
+    def create_job(self, path: str, is_dependency: bool = False) -> str:
+        """Creates a new job, assigns it a unique ID, and stores it."""
+        job_id = str(uuid.uuid4())
+        with self.lock:
+            self.jobs[job_id] = JobInfo(
+                job_id=job_id,
+                status=JobStatus.PENDING,
+                start_time=datetime.now(),
+                path=path,
+                is_dependency=is_dependency
+            )
+        return job_id
+
+    def update_job(self, job_id: str, **kwargs):
+        """Updates the information for a specific job in a thread-safe manner."""
+        with self.lock:
+            if job_id in self.jobs:
+                job = self.jobs[job_id]
+                for key, value in kwargs.items():
+                    if hasattr(job, key):
+                        setattr(job, key, value)
+                job.last_update_time = datetime.now()
+
+    def fail_job(self, job_id: str, error: Exception, status: JobStatus = JobStatus.FAILED):
+        """Record bounded diagnostics while preserving the existing errors[0] contract."""
+        trace = "".join(traceback_module.format_exception(type(error), error, error.__traceback__))
+        if len(trace) > MAX_TRACEBACK_CHARS:
+            marker = "[traceback truncated; showing final frames]\n"
+            trace = marker + trace[-(MAX_TRACEBACK_CHARS - len(marker)):]
+        self.update_job(
+            job_id,
+            status=status,
+            end_time=datetime.now(),
+            errors=[str(error)],
+            error_type=type(error).__name__,
+            traceback=trace,
+        )
+
+    def get_job(self, job_id: str) -> Optional[JobInfo]:
+        """Retrieves the information for a single job."""
+        with self.lock:
+            return self.jobs.get(job_id)
+
+    def list_jobs(self) -> List[JobInfo]:
+        """Returns a list of all jobs currently in the manager."""
+        with self.lock:
+            return list(self.jobs.values())
+
+    def find_active_job_by_path(self, path: str) -> Optional[JobInfo]:
+        """Finds the most recent, currently active (pending or running) job for a given path."""
+        with self.lock:
+            path_obj = Path(path).resolve()
+            
+            matching_jobs = sorted(
+                [job for job in self.jobs.values() if job.path and Path(job.path).resolve() == path_obj],
+                key=lambda j: j.start_time,
+                reverse=True
+            )
+
+            for job in matching_jobs:
+                if job.status in [JobStatus.PENDING, JobStatus.RUNNING]:
+                    return job
+                    
+            return None
+
+    def list_active_jobs(self) -> List[JobInfo]:
+        """Return all jobs that are still PENDING or RUNNING (#1536)."""
+        with self.lock:
+            return [
+                job for job in self.jobs.values()
+                if job.status in (JobStatus.PENDING, JobStatus.RUNNING)
+            ]
+
+    def cleanup_old_jobs(self, max_age_hours: int = 24):
+        """Removes old jobs from memory to prevent memory leaks.
+
+        Terminal jobs (COMPLETED/FAILED/CANCELLED) are aged by end_time,
+        falling back to start_time.
+
+        Jobs still PENDING/RUNNING are never deleted outright (#1537): a
+        healthy long-running index updates its progress constantly, and
+        deleting its record makes update_job silently no-op and
+        check_job_status report not_found while the worker keeps writing.
+        Instead, an active job with *no progress update* for the whole window
+        is presumed crashed and flipped to FAILED — the record stays visible,
+        and the next sweep ages it out through the terminal path.
+        """
+        cutoff_time = datetime.now() - timedelta(hours=max_age_hours)
+        with self.lock:
+            active = (JobStatus.PENDING, JobStatus.RUNNING)
+            jobs_to_remove = [
+                job_id for job_id, job in self.jobs.items()
+                if job.status not in active
+                and (job.end_time or job.start_time) < cutoff_time
+            ]
+            for job_id in jobs_to_remove:
+                del self.jobs[job_id]
+
+            for job in self.jobs.values():
+                if job.status in active:
+                    last_progress = job.last_update_time or job.start_time
+                    if last_progress < cutoff_time:
+                        job.status = JobStatus.FAILED
+                        job.end_time = datetime.now()
+                        if job.errors is None:
+                            job.errors = []
+                        job.errors.append(
+                            f"Presumed crashed: no progress update for {max_age_hours}h"
+                        )

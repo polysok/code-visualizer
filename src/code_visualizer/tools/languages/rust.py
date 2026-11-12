@@ -1,0 +1,605 @@
+# src/code_visualizer/tools/languages/rust.py
+from pathlib import Path
+from typing import Any, Dict, Optional, Tuple
+import re
+from code_visualizer.utils.debug_log import debug_log, info_logger, error_logger, warning_logger, debug_logger
+from code_visualizer.utils.tree_sitter_manager import execute_query
+from code_visualizer.tools.languages import rust_types
+
+RUST_QUERIES = {
+    "functions": """
+        (function_item
+            name: (identifier) @name
+            parameters: (parameters) @params
+        ) @function_node
+    """,
+    "classes": """
+        [
+            (struct_item name: (type_identifier) @name)
+            (enum_item name: (type_identifier) @name)
+            (trait_item name: (type_identifier) @name)
+        ] @type_node
+    """,
+    "imports": """
+        (use_declaration) @import
+    """,
+    "calls": """
+        (call_expression
+            function: [
+                (identifier) @name
+                (field_expression field: (field_identifier) @name)
+                (scoped_identifier name: (identifier) @name)
+            ]
+        )
+    """,
+}
+
+class RustTreeSitterParser:
+    """A Rust-specific parser using tree-sitter."""
+
+    def __init__(self, generic_parser_wrapper: Any):
+        self.generic_parser_wrapper = generic_parser_wrapper
+        self.language_name = "rust"
+        self.language = generic_parser_wrapper.language
+        self.parser = generic_parser_wrapper.parser
+
+    def _get_node_text(self, node: Any) -> str:
+        return node.text.decode("utf-8")
+
+    def parse(self, path: Path, is_dependency: bool = False, index_source: bool = False) -> Dict[str, Any]:
+        """Parses a Rust file and returns its structure."""
+        self.index_source = index_source
+        with open(path, "r", encoding="utf-8", errors="ignore") as f:
+            source_code = f.read()
+
+        tree = self.parser.parse(bytes(source_code, "utf8"))
+        root_node = tree.root_node
+
+        functions = self._find_functions(root_node)
+        structs, enums, traits = self._find_types(root_node)
+        imports = self._find_imports(root_node)
+        function_calls = self._find_calls(root_node)
+
+        return {
+            "path": str(path),
+            "functions": functions,
+            "structs": structs,
+            "enums": enums,
+            "traits": traits,
+            "variables": [],
+            "imports": imports,
+            "function_calls": function_calls,
+            "is_dependency": is_dependency,
+            "lang": self.language_name,
+        }
+
+    def _get_parent_context(self, node: Any, types: Tuple[str, ...] = ("function_item", "struct_item", "enum_item", "trait_item", "impl_item")) -> Tuple[Optional[str], Optional[str], Optional[int]]:
+        curr = node.parent
+        while curr:
+            if curr.type in types:
+                name_node = curr.child_by_field_name("name")
+                if not name_node and curr.type == "impl_item":
+                    # For impl blocks, use the type name
+                    # impl Trait for Type { ... } -> we want Type
+                    # impl Type { ... } -> we want Type
+                    # Let's find the last type_identifier before the block
+                    for child in reversed(curr.children):
+                        if child.type == "type_identifier":
+                            name_node = child
+                            break
+                
+                return (
+                    self._get_node_text(name_node) if name_node else None,
+                    curr.type,
+                    curr.start_point[0] + 1,
+                )
+            curr = curr.parent
+        return None, None, None
+
+    def _parse_function_args(self, params_node: Any) -> list[Dict[str, Any]]:
+        """Helper to parse function arguments from a (parameters) node."""
+        args = []
+        for param in params_node.named_children:
+            arg_info: Dict[str, Any] = {"name": "", "type": None}
+            if param.type == "parameter":
+                pattern_node = param.child_by_field_name("pattern")
+                type_node = param.child_by_field_name("type")
+                if pattern_node:
+                    arg_info["name"] = self._get_node_text(pattern_node)
+                if type_node:
+                    arg_info["type"] = self._get_node_text(type_node)
+                args.append(arg_info)
+            elif param.type == "self_parameter":
+                arg_info["name"] = self._get_node_text(param)
+                arg_info["type"] = "self"
+                args.append(arg_info)
+        return args
+
+    def _module_path_for_node(self, node: Any) -> Optional[str]:
+        parts: list[str] = []
+        curr = node
+        while curr:
+            if curr.type == "mod_item":
+                name_node = curr.child_by_field_name("name")
+                if name_node:
+                    parts.append(self._get_node_text(name_node))
+            curr = curr.parent
+        return "::".join(reversed(parts)) if parts else None
+
+    def _find_functions(self, root_node: Any) -> list[Dict[str, Any]]:
+        functions = []
+        query_str = "(function_item) @f"
+        seen_ids: set[int] = set()
+
+        for func_node, cap in execute_query(self.language, query_str, root_node):
+            if func_node.id in seen_ids:
+                continue
+            seen_ids.add(func_node.id)
+
+            name_node = func_node.child_by_field_name("name")
+            params_node = func_node.child_by_field_name("parameters")
+
+            if name_node:
+                name = self._get_node_text(name_node)
+                # Convert args to a list of strings (graph properties are primitive lists)
+                raw_args = self._parse_function_args(params_node) if params_node else []
+                params = []
+                for arg in raw_args:
+                    arg_str = arg["name"]
+                    if arg["type"]:
+                        arg_str += f": {arg['type']}"
+                    params.append(arg_str)
+
+                module_context = self._module_path_for_node(func_node)
+
+                # impl methods carried only module_context, so Point::new was
+                # never linked to Point and impl methods showed up as orphan
+                # functions (#1538). The impl_item's `type` field is the
+                # implementing type for both inherent (`impl Point`) and
+                # trait (`impl Draw for Point`) blocks.
+                class_context = None
+                class_context_line = None
+                impl_trait = None
+                curr = func_node.parent
+                while curr:
+                    if curr.type == "impl_item":
+                        type_node = curr.child_by_field_name("type")
+                        if type_node is not None:
+                            class_context = self._get_node_text(type_node)
+                            class_context_line = curr.start_point[0] + 1
+                        # `impl Embedder for E5`: lets calls on `dyn Embedder`
+                        # find this implementation (rust_types / calls.py).
+                        trait_node = curr.child_by_field_name("trait")
+                        if trait_node is not None:
+                            impl_trait = rust_types.simple_name(self._get_node_text(trait_node))
+                        break
+                    curr = curr.parent
+
+                func_data = {
+                    "name": name,
+                    "line_number": name_node.start_point[0] + 1,
+                    "end_line": func_node.end_point[0] + 1,
+                    "params": params,
+                    "args": params,
+                    "module_context": module_context,
+                    "class_context": class_context,
+                    "class_context_line": class_context_line,
+                    "is_extern": False,
+                    "lang": self.language_name,
+                    "is_dependency": False,
+                }
+
+                if impl_trait:
+                    func_data["impl_trait"] = impl_trait
+                if self.index_source:
+                    func_data["source"] = self._get_node_text(func_node)
+                
+                functions.append(func_data)
+
+        for node, _ in execute_query(self.language, "(foreign_mod_item) @fm", root_node):
+            extern_nodes: list[Any] = []
+
+            def collect_extern_functions(item_node: Any) -> None:
+                if item_node.type in ("function_item", "function_signature_item"):
+                    extern_nodes.append(item_node)
+                    return
+                for child in item_node.children:
+                    collect_extern_functions(child)
+
+            collect_extern_functions(node)
+            for child in extern_nodes:
+                if child.id in seen_ids:
+                    continue
+                seen_ids.add(child.id)
+                name_node = child.child_by_field_name("name")
+                if not name_node:
+                    for sub in child.children:
+                        if sub.type == "identifier":
+                            name_node = sub
+                            break
+                if not name_node:
+                    continue
+                name = self._get_node_text(name_node)
+                params_node = child.child_by_field_name("parameters")
+                raw_args = self._parse_function_args(params_node) if params_node else []
+                params = []
+                for arg in raw_args:
+                    arg_str = arg["name"]
+                    if arg["type"]:
+                        arg_str += f": {arg['type']}"
+                    params.append(arg_str)
+                functions.append({
+                    "name": name,
+                    "line_number": name_node.start_point[0] + 1,
+                    "end_line": child.end_point[0] + 1,
+                    "params": params,
+                    "args": params,
+                    "module_context": self._module_path_for_node(child),
+                    "is_extern": True,
+                    "lang": self.language_name,
+                    "is_dependency": False,
+                })
+
+        return functions
+
+    def _find_types(self, root_node: Any) -> Tuple[list, list, list]:
+        types_map = {}
+        trait_names = set()
+        
+        # 1. Find all struct, enum, and trait definitions
+        query_items = """
+        [
+            (struct_item) @s
+            (enum_item) @e
+            (trait_item) @t
+        ]
+        """
+        for item_node, cap in execute_query(self.language, query_items, root_node):
+            name_node = item_node.child_by_field_name("name")
+            if not name_node:
+                for child in item_node.children:
+                    if child.type == "type_identifier":
+                        name_node = child
+                        break
+            
+            if name_node:
+                name = self._get_node_text(name_node)
+                bases = []
+                # For traits, extract supertraits: trait A: B + C
+                if cap == "t":
+                    trait_names.add(name)
+                    # Tree-sitter-rust: trait_item -> trait_bounds child?
+                    # Let's check node children for ':'
+                    has_colon = False
+                    for child in item_node.children:
+                        if child.type == ":":
+                            has_colon = True
+                        if has_colon and child.type == "trait_bounds":
+                            for bound in child.children:
+                                if bound.type == "type_identifier":
+                                    bases.append(self._get_node_text(bound))
+
+                if cap == "t":
+                    category = "trait"
+                elif cap == "e":
+                    category = "enum"
+                else:
+                    category = "struct"
+
+                types_map[name] = {
+                    "name": name,
+                    "line_number": name_node.start_point[0] + 1,
+                    "end_line": item_node.end_point[0] + 1,
+                    "bases": bases,
+                    "type": category
+                }
+                if self.index_source:
+                    types_map[name]["source"] = self._get_node_text(item_node)
+
+        # 2. Find all impl blocks and extract traits as bases
+        query_impls = "(impl_item) @i"
+        for impl_node, _ in execute_query(self.language, query_impls, root_node):
+            identifiers = [c for c in impl_node.children if c.type == "type_identifier"]
+            has_for = any(c.type == "for" for c in impl_node.children)
+            
+            if has_for and len(identifiers) >= 2:
+                trait_name = self._get_node_text(identifiers[0])
+                type_name = self._get_node_text(identifiers[1])
+                if type_name in types_map:
+                    types_map[type_name]["bases"].append(trait_name)
+                    
+        structs = [v for v in types_map.values() if v["type"] == "struct"]
+        enums = [v for v in types_map.values() if v["type"] == "enum"]
+        traits = [v for v in types_map.values() if v["type"] == "trait"]
+        for s in structs: s.pop("type")
+        for e in enums: e.pop("type")
+        for t in traits: t.pop("type")
+        
+        return structs, enums, traits
+
+    def _find_imports(self, root_node: Any) -> list[Dict[str, Any]]:
+        """Walk `use` declarations structurally (#1538).
+
+        The old text-based version had two audit findings: a braced list
+        (`use std::collections::{HashMap, HashSet};`) kept only the LAST
+        name, and `full_import_name` was the raw source including the `use`
+        keyword and semicolon — written verbatim as the Module node name,
+        where no path-matching consumer could ever match it.
+        """
+        imports = []
+
+        def _emit(name, full, alias, line):
+            imports.append({
+                "name": name,
+                "full_import_name": full,
+                "line_number": line,
+                "alias": alias,
+            })
+
+        def _last_segment(path_text):
+            seg = path_text.split("::")[-1].strip()
+            return seg or path_text
+
+        def _walk_use_arg(node, base, line):
+            """base is the '::'-joined path prefix accumulated so far."""
+            t = node.type
+            text = self._get_node_text(node)
+            if t in ("identifier", "scoped_identifier", "crate", "self", "super"):
+                full = f"{base}::{text}" if base else text
+                _emit(_last_segment(full), full, None, line)
+            elif t == "use_as_clause":
+                inner = node.children[0]
+                alias_node = node.children[-1]
+                inner_text = self._get_node_text(inner)
+                full = f"{base}::{inner_text}" if base else inner_text
+                _emit(self._get_node_text(alias_node), full, self._get_node_text(alias_node), line)
+            elif t == "use_wildcard":
+                # use x::*;  — child[0] is the path, if any (super/crate/self
+                # are their own node types, not identifiers)
+                path_children = [c for c in node.children if c.type in ("identifier", "scoped_identifier", "super", "crate", "self")]
+                prefix = self._get_node_text(path_children[0]) if path_children else ""
+                full_base = f"{base}::{prefix}" if base and prefix else (prefix or base)
+                _emit("*", f"{full_base}::*" if full_base else "*", None, line)
+            elif t == "scoped_use_list":
+                # <path> :: { list }
+                path_children = [c for c in node.children if c.type in ("identifier", "scoped_identifier", "super", "crate", "self")]
+                prefix = self._get_node_text(path_children[0]) if path_children else ""
+                new_base = f"{base}::{prefix}" if base and prefix else (prefix or base)
+                for c in node.children:
+                    if c.type == "use_list":
+                        _walk_use_arg(c, new_base, line)
+            elif t == "use_list":
+                for c in node.children:
+                    if c.type not in ("{", "}", ","):
+                        _walk_use_arg(c, base, line)
+
+        query_str = RUST_QUERIES["imports"]
+        for node, _ in execute_query(self.language, query_str, root_node):
+            line = node.start_point[0] + 1
+            for child in node.children:
+                if child.type not in ("use", ";"):
+                    _walk_use_arg(child, "", line)
+        return imports
+
+    # ------------------------------------------------------------------
+    # Receiver description for `recv.method()` (see rust_types.py)
+    # ------------------------------------------------------------------
+
+    # Associated functions that conventionally return `Self` (or Result/Option of it).
+    _CTOR_NAMES = frozenset({"new", "default", "from", "open", "connect", "create", "build", "load",
+                             "parse", "with_capacity", "try_new", "try_from"})
+
+    def _impl_type(self, node: Any) -> Optional[str]:
+        cur = node.parent
+        while cur is not None:
+            if cur.type == "impl_item":
+                t = cur.child_by_field_name("type")
+                return self._get_node_text(t) if t is not None else None
+            cur = cur.parent
+        return None
+
+    def _bindings(self, scope: Any, before_byte: int, cache: Dict[Any, Any]) -> Dict[str, Any]:
+        """Name -> type text (str) or value expression node, for parameters
+        and `let`s of *scope* that are complete before *before_byte* (the
+        last one wins, so shadowing is honoured)."""
+        decls = cache.get(scope.id)
+        if decls is None:
+            decls = []
+            stack = [scope]
+            while stack:
+                cur = stack.pop()
+                if cur.type in ("parameter", "let_declaration"):
+                    decls.append(cur)
+                if cur.type in ("function_item", "impl_item", "struct_item", "trait_item", "mod_item") \
+                        and cur is not scope:
+                    continue
+                stack.extend(cur.named_children)
+            decls.sort(key=lambda d: d.start_byte)
+            cache[scope.id] = decls
+        found: Dict[str, Any] = {}
+        for decl in decls:
+            if decl.end_byte > before_byte:
+                continue
+            pattern = decl.child_by_field_name("pattern")
+            if pattern is not None and pattern.type == "mut_pattern":
+                pattern = next((c for c in pattern.named_children if c.type == "identifier"), None)
+            if pattern is None or pattern.type != "identifier":
+                continue
+            type_node = decl.child_by_field_name("type")
+            if type_node is not None:
+                found[self._get_node_text(pattern)] = self._get_node_text(type_node)
+            elif decl.type == "let_declaration" and decl.child_by_field_name("value") is not None:
+                found[self._get_node_text(pattern)] = decl.child_by_field_name("value")
+        return found
+
+    def _describe(self, expr: Any, cache: Dict[Any, Any], depth: int = 0) -> Optional[Tuple[str, list]]:
+        """(base_type_text, steps) for an expression, or None if unknown."""
+        if expr is None or depth > 8:
+            return None
+        t = expr.type
+        if t in ("parenthesized_expression", "reference_expression", "unary_expression"):
+            inner = expr.child_by_field_name("value") or (expr.named_children[0] if expr.named_children else None)
+            return self._describe(inner, cache, depth + 1)
+        if t == "self":
+            impl_type = self._impl_type(expr)
+            return (impl_type, []) if impl_type else None
+        if t == "identifier":
+            scope = expr.parent
+            while scope is not None and scope.type not in ("function_item", "closure_expression"):
+                scope = scope.parent
+            while scope is not None:
+                binding = self._bindings(scope, expr.start_byte, cache).get(self._get_node_text(expr))
+                if isinstance(binding, str):
+                    return (binding, [])
+                if binding is not None:
+                    return self._describe(binding, cache, depth + 1)
+                # Closures see the enclosing function's bindings.
+                scope = scope.parent
+                while scope is not None and scope.type not in ("function_item", "closure_expression"):
+                    scope = scope.parent
+            return None
+        if t == "field_expression":
+            field = expr.child_by_field_name("field")
+            if field is None or field.type != "field_identifier":
+                return None  # tuple index `.0`
+            base = self._describe(expr.child_by_field_name("value"), cache, depth + 1)
+            return (base[0], base[1] + [["field", self._get_node_text(field)]]) if base else None
+        if t == "try_expression":
+            inner = expr.named_children[0] if expr.named_children else None
+            base = self._describe(inner, cache, depth + 1)
+            return (base[0], base[1] + [["try"]]) if base else None
+        if t == "await_expression":
+            inner = expr.named_children[0] if expr.named_children else None
+            base = self._describe(inner, cache, depth + 1)
+            return (base[0], base[1] + [["await"]]) if base else None
+        if t == "struct_expression":
+            name = expr.child_by_field_name("name")
+            return (self._get_node_text(name), []) if name is not None else None
+        if t == "call_expression":
+            fn = expr.child_by_field_name("function")
+            if fn is not None and fn.type == "generic_function":
+                fn = fn.child_by_field_name("function")
+            if fn is None:
+                return None
+            if fn.type == "field_expression":
+                method = fn.child_by_field_name("field")
+                base = self._describe(fn.child_by_field_name("value"), cache, depth + 1)
+                if base and method is not None:
+                    return (base[0], base[1] + [["call", self._get_node_text(method)]])
+                return None
+            if fn.type == "scoped_identifier":
+                path = fn.child_by_field_name("path")
+                name = fn.child_by_field_name("name")
+                if path is None or name is None:
+                    return None
+                fname = self._get_node_text(name)
+                type_text = self._get_node_text(path)
+                last = type_text.rsplit("::", 1)[-1]
+                if (fname in self._CTOR_NAMES or fname.startswith(("new_", "with_", "from_"))) \
+                        and last[:1].isupper():
+                    return (type_text, [])
+            return None
+        return None
+
+    def _receiver_info(self, call_node: Any, cache: Dict[Any, Any]) -> Tuple[Optional[str], Optional[Dict[str, Any]]]:
+        """(inferred_obj_type, receiver_chain) for a method call."""
+        fn = call_node.child_by_field_name("function")
+        if fn is not None and fn.type == "generic_function":
+            fn = fn.child_by_field_name("function")
+        if fn is None or fn.type != "field_expression":
+            return None, None
+        try:
+            described = self._describe(fn.child_by_field_name("value"), cache)
+        except Exception:  # noqa: BLE001 - inference must never break parsing
+            return None, None
+        if not described or not described[0]:
+            return None, None
+        base, steps = described
+        self_type = self._impl_type(call_node)
+        if not steps:
+            return rust_types.simple_name(base, self_type), None
+        return None, {"base": base, "self_type": self_type, "steps": steps}
+
+    def _find_calls(self, root_node: Any) -> list[Dict[str, Any]]:
+        """Finds all function and method calls."""
+        calls = []
+        binding_cache: Dict[Any, Any] = {}
+        query_str = RUST_QUERIES["calls"]
+        for node, capture_name in execute_query(self.language, query_str, root_node):
+            if capture_name == "name":
+                # Find the call_expression
+                call_node = node.parent
+                while call_node and call_node.type != 'call_expression' and call_node.type != 'source_file':
+                    call_node = call_node.parent
+                
+                call_name = self._get_node_text(node)
+                
+                # Extract arguments
+                args = []
+                if call_node and call_node.type == 'call_expression':
+                    args_node = call_node.child_by_field_name('arguments')
+                    if args_node:
+                        for child in args_node.children:
+                            if child.type not in ('(', ')', ','):
+                                args.append(self._get_node_text(child))
+
+                # For `Type::method()` the scope is the receiver type — now
+                # that impl methods carry class_context (#1538), handing the
+                # scope to resolution lets it pick the RIGHT `new` among many
+                # same-named impl methods instead of guessing (or, worse,
+                # binding Arc::new/Box::new to an unrelated local `new`).
+                inferred_obj_type = None
+                if call_node and call_node.type == 'call_expression':
+                    fn_node = call_node.child_by_field_name('function')
+                    if fn_node is not None and fn_node.type == 'scoped_identifier':
+                        scope_node = fn_node.child_by_field_name('path')
+                        if scope_node is not None:
+                            scope_text = self._get_node_text(scope_node)
+                            # `Vec::<T>::new` styles: keep the last plain segment
+                            inferred_obj_type = scope_text.split('::')[-1] or None
+
+                receiver_chain = None
+                if inferred_obj_type is None and call_node is not None and call_node.type == 'call_expression':
+                    inferred_obj_type, receiver_chain = self._receiver_info(call_node, binding_cache)
+
+                call_entry = (
+                    {
+                        "name": call_name,
+                        "full_name": self._get_node_text(call_node) if call_node else call_name,
+                        "line_number": node.start_point[0] + 1,
+                        "args": args,
+                        "inferred_obj_type": inferred_obj_type,
+                        "context": self._get_parent_context(node),
+                        "lang": self.language_name,
+                        "is_dependency": False,
+                    }
+                )
+                if receiver_chain is not None:
+                    call_entry["receiver_chain"] = receiver_chain
+                calls.append(call_entry)
+        return calls
+
+def pre_scan_rust(files: list[Path], parser_wrapper) -> dict:
+    """Scans Rust files to create a map of function/struct/enum/trait names to their file paths."""
+    imports_map = {}
+    query_str = """
+        (function_item name: (identifier) @name)
+        (struct_item name: (type_identifier) @name)
+        (enum_item name: (type_identifier) @name)
+        (trait_item name: (type_identifier) @name)
+    """
+    
+
+    for path in files:
+        try:
+            with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                tree = parser_wrapper.parser.parse(bytes(f.read(), "utf8"))
+
+            for capture, _ in execute_query(parser_wrapper.language, query_str, tree.root_node):
+                name = capture.text.decode('utf-8')
+                if name not in imports_map:
+                    imports_map[name] = []
+                imports_map[name].append(path.resolve().as_posix())
+        except Exception as e:
+            warning_logger(f"Tree-sitter pre-scan failed for {path}: {e}")
+    return imports_map

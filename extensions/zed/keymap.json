@@ -1,0 +1,10 @@
+// Merge into ~/.config/zed/keymap.json (Zed > Settings > Open Key Bindings).
+[
+  {
+    "context": "Editor",
+    "bindings": {
+      "cmd-alt-g": ["task::Spawn", { "task_name": "CViz: open in dependency graph" }],
+      "ctrl-alt-g": ["task::Spawn", { "task_name": "CViz: open in dependency graph" }]
+    }
+  }
+]

@@ -1,0 +1,108 @@
+"""Path sandbox helpers for CLI and MCP tools."""
+from __future__ import annotations
+
+import os
+import re
+from pathlib import Path
+from typing import List
+from urllib.parse import urlparse
+
+MAX_DISCOVERY_DEPTH = 10
+
+# Hosted bundle registries; HTTPS is required below.
+_ALLOWED_DOWNLOAD_HOST_SUFFIXES = (
+    "huggingface.co",
+    "hf.co",
+    "github.com",
+    "raw.githubusercontent.com",
+    "gitlab.com",
+    "raw.gitlab.com",
+)
+
+
+def get_allowed_roots() -> List[Path]:
+    """Return directories under which paths may be indexed or loaded."""
+    roots: List[Path] = [Path.cwd().resolve()]
+
+    env_roots = os.environ.get("CVIZ_ALLOWED_ROOTS", "")
+    if env_roots and env_roots != "*":
+        separator = ";" if os.name == "nt" else ":"
+        for entry in env_roots.split(separator):
+            entry = entry.strip()
+            if entry:
+                roots.append(Path(entry).resolve())
+
+    return roots
+
+
+def is_path_sandbox_disabled() -> bool:
+    """True when path sandboxing is explicitly disabled.
+
+    Set ``CVIZ_ALLOW_ALL_PATHS=true`` or ``CVIZ_ALLOWED_ROOTS=*`` to permit
+    indexing, watching, and managing any filesystem path. Disabled by
+    default so sandboxing stays on unless a user opts in.
+    """
+    if os.environ.get("CVIZ_ALLOW_ALL_PATHS", "").strip().lower() in ("1", "true", "yes"):
+        return True
+    return os.environ.get("CVIZ_ALLOWED_ROOTS", "").strip() == "*"
+
+
+def is_path_allowed(path: Path) -> bool:
+    """True when *path* resolves under an allowed root, or sandboxing is disabled."""
+    if is_path_sandbox_disabled():
+        return True
+    resolved = path.resolve()
+    for root in get_allowed_roots():
+        try:
+            resolved.relative_to(root)
+            return True
+        except ValueError:
+            continue
+    return False
+
+
+def is_path_under_root(path: Path, root: Path) -> bool:
+    """True when *path* resolves under *root*."""
+    try:
+        path.resolve().relative_to(root.resolve())
+        return True
+    except ValueError:
+        return False
+
+
+def sanitize_bundle_filename(filename: str, default: str = "bundle.cviz") -> str:
+    """Return a safe basename for a downloaded bundle file."""
+    if not filename or ".." in filename or "/" in filename or "\\" in filename:
+        return default
+    name = Path(filename).name
+    if not name or name in (".", ".."):
+        return default
+    # Always sanitize the stem so that unsafe characters cannot bypass the
+    # check by simply appending a .cviz extension.
+    stem = name[:-len(".cviz")] if name.lower().endswith(".cviz") else name
+    sanitized_stem = re.sub(r"[^\w.\-]+", "_", stem)
+    # Re-attach the extension whether it was present or not.
+    return f"{sanitized_stem}.cviz"
+
+
+def is_safe_download_url(url: str) -> bool:
+    """True when *url* uses HTTPS and points to an allowed registry host."""
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return False
+    if parsed.scheme != "https":
+        return False
+    host = (parsed.hostname or "").lower()
+    if not host:
+        return False
+    return any(host == suffix or host.endswith(f".{suffix}") for suffix in _ALLOWED_DOWNLOAD_HOST_SUFFIXES)
+
+
+def clamp_discovery_depth(max_depth: int) -> int:
+    """Clamp discovery depth to a safe range."""
+    try:
+        depth = int(max_depth)
+    except (TypeError, ValueError):
+        return 1
+    return max(0, min(depth, MAX_DISCOVERY_DEPTH))

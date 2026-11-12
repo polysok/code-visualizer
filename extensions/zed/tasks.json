@@ -1,0 +1,13 @@
+// Code Visualizer task for Zed. Prefer `cviz ide zed <repo>`, which adds it to
+// <repo>/.zed/tasks.json. By hand: merge into ~/.config/zed/tasks.json
+// (or <project>/.zed/tasks.json) and bind it in keymap.json.
+[
+  {
+    "label": "CViz: open in dependency graph",
+    "command": "cviz-open",
+    "args": ["$ZED_FILE:$ZED_ROW", "--ide", "zed"],
+    "reveal": "never",
+    "hide": "on_success",
+    "allow_concurrent_runs": true
+  }
+]

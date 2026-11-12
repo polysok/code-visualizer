@@ -1,0 +1,737 @@
+# src/code_visualizer/tools/languages/swift.py
+from pathlib import Path
+from typing import Any, Dict, Optional, Tuple
+import re
+from code_visualizer.utils.debug_log import debug_log, info_logger, error_logger, warning_logger
+from code_visualizer.utils.tree_sitter_manager import execute_query
+
+SWIFT_QUERIES = {
+    "functions": """
+        [
+            (function_declaration) @function_node
+            (init_declaration) @init_node
+        ]
+    """,
+    "classes": """
+        [
+            (class_declaration) @class_decl
+            (protocol_declaration) @protocol
+        ]
+    """,
+    "imports": """
+        (import_declaration) @import
+    """,
+    "calls": """
+        [
+            (call_expression) @call_node
+            (constructor_expression) @call_node
+        ]
+    """,
+    "variables": """
+        [
+            (property_declaration) @variable
+            (parameter) @variable
+        ]
+    """,
+}
+
+class SwiftTreeSitterParser:
+    def __init__(self, generic_parser_wrapper: Any):
+        self.generic_parser_wrapper = generic_parser_wrapper
+        self.language_name = "swift"
+        self.language = generic_parser_wrapper.language
+        self.parser = generic_parser_wrapper.parser
+
+    def parse(self, path: Path, is_dependency: bool = False, index_source: bool = False) -> Dict[str, Any]:
+        try:
+            self.index_source = index_source
+            with open(path, 'r', encoding='utf-8', errors='ignore') as f:
+                source_code = f.read()
+
+            if not source_code.strip():
+                warning_logger(f"Empty or whitespace-only file: {path}")
+                return {
+                    "path": str(path),
+                    "functions": [],
+                    "classes": [],
+                    "structs": [],
+                    "enums": [],
+                    "protocols": [],
+                    "variables": [],
+                    "imports": [],
+                    "function_calls": [],
+                    "is_dependency": is_dependency,
+                    "lang": self.language_name,
+                }
+
+            tree = self.parser.parse(bytes(source_code, "utf8"))
+
+            parsed_functions = []
+            parsed_classes = []
+            parsed_structs = []
+            parsed_enums = []
+            parsed_protocols = []
+            parsed_variables = []
+            parsed_imports = []
+            parsed_calls = []
+
+            # Parse Variables first to populate for inference
+            if 'variables' in SWIFT_QUERIES:
+                results = execute_query(self.language, SWIFT_QUERIES['variables'], tree.root_node)
+                parsed_variables = self._parse_variables(results, source_code, path)
+
+            for capture_name, query in SWIFT_QUERIES.items():
+                if capture_name == 'variables': continue  # Already done
+                results = execute_query(self.language, query, tree.root_node)
+
+                if capture_name == "functions":
+                    parsed_functions.extend(self._parse_functions(results, source_code, path))
+                elif capture_name == "classes":
+                    classes, structs, enums, protocols = self._parse_classes(results, source_code, path)
+                    parsed_classes.extend(classes)
+                    parsed_structs.extend(structs)
+                    parsed_enums.extend(enums)
+                    parsed_protocols.extend(protocols)
+                elif capture_name == "imports":
+                    parsed_imports.extend(self._parse_imports(results, source_code))
+                elif capture_name == "calls":
+                    parsed_calls.extend(self._parse_calls(results, source_code, path, parsed_variables))
+
+            return {
+                "path": str(path),
+                "functions": parsed_functions,
+                "classes": parsed_classes,
+                "structs": parsed_structs,
+                "enums": parsed_enums,
+                "traits": parsed_protocols,
+                "variables": parsed_variables,
+                "imports": parsed_imports,
+                "function_calls": parsed_calls,
+                "is_dependency": is_dependency,
+                "lang": self.language_name,
+            }
+
+        except Exception as e:
+            error_logger(f"Error parsing Swift file {path}: {e}")
+            return {
+                "path": str(path),
+                "functions": [],
+                "classes": [],
+                "structs": [],
+                "enums": [],
+                "traits": [],
+                "variables": [],
+                "imports": [],
+                "function_calls": [],
+                "is_dependency": is_dependency,
+                "lang": self.language_name,
+            }
+
+    def _get_parent_context(self, node: Any, types: Optional[Tuple[str, ...]] = None) -> Tuple[Optional[str], Optional[str], Optional[int]]:
+        curr = node.parent
+        while curr:
+            if types is not None and curr.type not in types:
+                curr = curr.parent
+                continue
+            if curr.type == "function_declaration":
+                name_node = curr.child_by_field_name("name")
+                if not name_node:
+                    for child in curr.children:
+                        if child.type == "simple_identifier":
+                            name_node = child
+                            break
+                return (
+                    self._get_node_text(name_node) if name_node else None,
+                    curr.type,
+                    curr.start_point[0] + 1,
+                )
+            if curr.type in (
+                "class_declaration",
+                "struct_declaration",
+                "enum_declaration",
+                "protocol_declaration",
+                "extension_declaration",
+            ):
+                child_texts = {
+                    self._get_node_text(child)
+                    for child in curr.children
+                    if child.type in ("extension", "class", "struct", "enum", "protocol", "actor")
+                }
+                context_type = (
+                    "extension_declaration"
+                    if "extension" in child_texts
+                    else curr.type
+                )
+                for child in curr.children:
+                    if child.type == "type_identifier":
+                        return (
+                            self._get_node_text(child),
+                            context_type,
+                            curr.start_point[0] + 1,
+                        )
+                    if child.type == "user_type":
+                        for inner in child.children:
+                            if inner.type == "type_identifier":
+                                return (
+                                    self._get_node_text(inner),
+                                    context_type,
+                                    curr.start_point[0] + 1,
+                                )
+            if curr.type == "init_declaration":
+                # For initializers, return the parent class/struct name
+                parent = curr.parent
+                if parent and parent.type in ("class_body", "struct_body"):
+                    grandparent = parent.parent
+                    if grandparent:
+                        for child in grandparent.children:
+                            if child.type == "type_identifier":
+                                return (
+                                    self._get_node_text(child),
+                                    grandparent.type,
+                                    grandparent.start_point[0] + 1,
+                                )
+                return ("init", curr.type, curr.start_point[0] + 1)
+            curr = curr.parent
+        return None, None, None
+
+    def _get_node_text(self, node: Any) -> str:
+        if not node: return ""
+        return node.text.decode("utf-8")
+
+    def _calculate_complexity(self, node: Any) -> int:
+        """Cyclomatic complexity for a Swift function/init body.
+
+        Counts decision points: if/for/while/repeat-while/guard, each non-default
+        switch case, each catch block, boolean &&/||, and ternary `?:`.
+        """
+        from code_visualizer.tools.indexing.constants import MAX_AST_DEPTH
+        decision_node_types = {
+            "if_statement",
+            "for_statement",
+            "while_statement",
+            "repeat_while_statement",
+            "guard_statement",
+            "catch_block",
+            "conjunction_expression",
+            "disjunction_expression",
+            "ternary_expression",
+        }
+        count = 1
+        skipped = False
+
+        def traverse(n: Any, depth: int = 0) -> None:
+            nonlocal count, skipped
+            if depth > MAX_AST_DEPTH:
+                skipped = True
+                return
+            t = n.type
+            if t in decision_node_types:
+                count += 1
+            elif t == "switch_entry":
+                is_default = any(c.type == "default_keyword" for c in n.children)
+                if not is_default:
+                    count += 1
+            for child in n.children:
+                traverse(child, depth + 1)
+
+        traverse(node)
+        if skipped:
+            warning_logger(
+                f"AST depth exceeded {MAX_AST_DEPTH} levels; "
+                "complexity count may be underestimated."
+            )
+        return count
+
+    def _parse_functions(self, captures: list, source_code: str, path: Path) -> list[Dict[str, Any]]:
+        functions = []
+        seen_nodes = set()
+
+        for node, capture_name in captures:
+            if capture_name in ("function_node", "init_node"):
+                node_id = (node.start_byte, node.end_byte, node.type)
+                if node_id in seen_nodes:
+                    continue
+                seen_nodes.add(node_id)
+                
+                try:
+                    start_line = node.start_point[0] + 1
+                    end_line = node.end_point[0] + 1
+                    
+                    # Get function name
+                    func_name = "init" if capture_name == "init_node" else None
+                    if capture_name == "function_node":
+                        for child in node.children:
+                            if child.type == "simple_identifier":
+                                func_name = self._get_node_text(child)
+                                break
+                            elif child.type == "type_identifier": # fallback
+                                func_name = self._get_node_text(child)
+                                break
+                    
+                    if not func_name:
+                        continue
+                    
+                    # Extract parameters
+                    parameters = []
+                    for child in node.children:
+                        if child.type == "parameter":
+                            param_name = self._extract_parameter_name(child)
+                            if param_name:
+                                parameters.append(param_name)
+                    
+                    source_text = self._get_node_text(node)
+                    context_name, context_type, context_line = self._get_parent_context(node)
+
+                    func_data = {
+                        "name": func_name,
+                        "args": parameters,
+                        "line_number": start_line,
+                        "end_line": end_line,
+                        "path": str(path),
+                        "lang": self.language_name,
+                        "context": context_name,
+                        "class_context": context_name if context_type and any(
+                            token in context_type
+                            for token in ("class", "struct", "extension", "protocol")
+                        ) else None,
+                        "cyclomatic_complexity": self._calculate_complexity(node),
+                        "is_dependency": False,
+                    }
+                    
+                    if self.index_source:
+                         func_data["source"] = source_text
+
+                    functions.append(func_data)
+                    
+                except Exception as e:
+                    error_logger(f"Error parsing function in {path}: {e}")
+                    continue
+
+        return functions
+
+    def _parse_classes(self, captures: list, source_code: str, path: Path) -> Tuple[list, list, list, list]:
+        classes = []
+        structs = []
+        enums = []
+        protocols = []
+        seen_nodes = set()
+
+        for node, capture_name in captures:
+            if capture_name in ("class_decl", "protocol"):
+                node_id = (node.start_byte, node.end_byte, node.type)
+                if node_id in seen_nodes:
+                    continue
+                seen_nodes.add(node_id)
+                
+                try:
+                    # Decide category based on keyword
+                    category = "class"
+                    if capture_name == "protocol":
+                        category = "protocol"
+                    else:
+                        for child in node.children:
+                            kw = self._get_node_text(child)
+                            if kw == "struct":
+                                category = "struct"
+                                break
+                            elif kw == "enum":
+                                category = "enum"
+                                break
+                            elif kw == "actor":
+                                category = "class"
+                                break
+                            elif kw == "class":
+                                category = "class"
+                                break
+                            elif kw == "extension":
+                                category = "extension"
+                                break
+                    start_line = node.start_point[0] + 1
+                    end_line = node.end_point[0] + 1
+                    
+                    # Find name
+                    type_name = "Anonymous"
+                    for child in node.children:
+                        if child.type in ("type_identifier", "simple_identifier"):
+                            type_name = self._get_node_text(child)
+                            break
+                    
+                    source_text = self._get_node_text(node)
+                    
+                    # Extract inheritance/protocol conformance.
+                    # In tree-sitter-swift the bases appear as one or more
+                    # `inheritance_specifier` siblings under `class_declaration`,
+                    # each wrapping a `user_type` -> `type_identifier`. The
+                    # legacy `type_inheritance_clause` node type is not emitted
+                    # by the current grammar, so the previous logic produced
+                    # empty `bases` for every Swift type.
+                    bases = []
+                    for child in node.children:
+                        if child.type == "inheritance_specifier":
+                            for subchild in child.children:
+                                if subchild.type == "user_type":
+                                    for inner in subchild.children:
+                                        if inner.type == "type_identifier":
+                                            bases.append(self._get_node_text(inner))
+                                            break
+                                elif subchild.type == "type_identifier":
+                                    bases.append(self._get_node_text(subchild))
+                    
+                    type_data = {
+                        "name": type_name,
+                        "line_number": start_line,
+                        "end_line": end_line,
+                        "bases": bases,
+                        "path": str(path),
+                        "lang": self.language_name,
+                    }
+
+                    if self.index_source:
+                        type_data["source"] = source_text
+                    
+                    if category == "extension":
+                        continue
+                    if category == "class":
+                        classes.append(type_data)
+                    elif category == "struct":
+                        structs.append(type_data)
+                    elif category == "enum":
+                        enums.append(type_data)
+                    elif category == "protocol":
+                        protocols.append(type_data)
+                        
+                except Exception as e:
+                    error_logger(f"Error parsing type in {path}: {e}")
+                    continue
+
+        return classes, structs, enums, protocols
+
+    def _parse_variables(self, captures: list, source_code: str, path: Path) -> list[Dict[str, Any]]:
+        variables = []
+        seen_vars = set()
+        
+        for node, capture_name in captures:
+            if capture_name in ("variable", "constant", "pattern"):
+                try:
+                    start_line = node.start_point[0] + 1
+                    ctx_name, ctx_type, ctx_line = self._get_parent_context(node)
+
+                    var_name = "unknown"
+                    var_type = "Unknown"
+                    
+                    # Try to extract variable name
+                    def find_id(n):
+                        if n.type == "simple_identifier":
+                            return self._get_node_text(n)
+                        for c in n.children:
+                            res = find_id(c)
+                            if res: return res
+                        return None
+                    
+                    var_name = find_id(node) or "unknown"
+                    
+                    # Try to extract type annotation
+                    for child in node.children:
+                        if child.type == "type_annotation":
+                            for subchild in child.children:
+                                if subchild.type == "type_identifier":
+                                    var_type = self._get_node_text(subchild)
+                                    break
+
+                    if var_type == "Unknown":
+                        for child in node.children:
+                            if child.type == "call_expression":
+                                callee = child.children[0] if child.children else None
+                                if callee and callee.type == "simple_identifier":
+                                    var_type = self._get_node_text(callee)
+                                    break
+                            elif child.type not in ("=", "value_binding_pattern", "pattern"):
+                                init_text = self._get_node_text(child).strip()
+                                constructor_match = re.match(
+                                    r"([A-Z]\w*)\s*\(",
+                                    init_text,
+                                )
+                                if constructor_match:
+                                    var_type = constructor_match.group(1)
+                                    break
+
+                    if var_name != "unknown":
+                        var_key = (var_name, start_line)
+                        if var_key not in seen_vars:
+                            seen_vars.add(var_key)
+                            variables.append({
+                                "name": var_name,
+                                "type": var_type,
+                                "line_number": start_line,
+                                "path": str(path),
+                                "lang": self.language_name,
+                                "context": ctx_name,
+                                "class_context": ctx_name if ctx_type and ("class" in ctx_type or "struct" in ctx_type) else None
+                            })
+                except Exception as e:
+                    continue
+
+        return variables
+
+    def _parse_imports(self, captures: list, source_code: str) -> list[dict]:
+        imports = []
+        
+        for node, capture_name in captures:
+            if capture_name == "import":
+                try:
+                    text = self._get_node_text(node)
+                    # import Foundation
+                    # import UIKit
+                    parts = text.replace('import ', '').strip().split()
+                    module_name = parts[0] if parts else ""
+                    
+                    if module_name:
+                        imports.append({
+                            "name": module_name,
+                            "full_import_name": module_name,
+                            "line_number": node.start_point[0] + 1,
+                            "alias": None,
+                            "context": (None, None),
+                            "lang": self.language_name,
+                            "is_dependency": False,
+                        })
+                except Exception as e:
+                    continue
+
+        return imports
+
+    # ------------------------------------------------------------------
+    # Receiver description for `recv.method()` (see member_types.py)
+    # ------------------------------------------------------------------
+
+    _SWIFT_SCOPES = ("function_declaration", "init_declaration", "lambda_literal",
+                     "computed_property", "subscript_declaration", "deinit_declaration")
+
+    def _enclosing_type(self, node: Any) -> Optional[Any]:
+        cur = node.parent
+        while cur is not None:
+            if cur.type in ("class_declaration", "protocol_declaration"):
+                return cur
+            cur = cur.parent
+        return None
+
+    def _swift_param(self, param: Any) -> Tuple[Optional[str], Optional[str]]:
+        kids = [c for c in param.named_children]
+        name = next((self._get_node_text(c) for c in kids if c.type == "simple_identifier"), None)
+        type_node = next((c for c in reversed(kids) if c.type not in ("simple_identifier", "parameter_modifiers")), None)
+        return name, (self._get_node_text(type_node) if type_node is not None else None)
+
+    def _swift_binding(self, ident: Any, cache: Dict[Any, Any]) -> Optional[str]:
+        from .member_types import swift_property
+
+        name = self._get_node_text(ident)
+        scope = ident.parent
+        while scope is not None:
+            if scope.type in self._SWIFT_SCOPES:
+                decls = cache.get(scope.id)
+                if decls is None:
+                    decls = []
+                    stack = [scope]
+                    while stack:
+                        cur = stack.pop()
+                        if cur.type == "parameter":
+                            pname, ptype = self._swift_param(cur)
+                            decls.append((cur.start_byte, cur.end_byte, pname, ptype))
+                        elif cur.type == "property_declaration":
+                            pname, ptype = swift_property(cur)
+                            decls.append((cur.start_byte, cur.end_byte, pname, ptype))
+                        if cur is not scope and (cur.type in self._SWIFT_SCOPES or cur.type == "class_declaration"):
+                            continue
+                        stack.extend(cur.named_children)
+                    decls.sort()
+                    cache[scope.id] = decls
+                matched, found = False, None
+                for _start, end, pname, ptype in decls:
+                    if pname == name and end <= ident.start_byte:
+                        matched, found = True, ptype
+                if matched:
+                    return found
+            elif scope.type in ("class_declaration", "protocol_declaration"):
+                body = scope.child_by_field_name("body")
+                for member in (body.named_children if body is not None else []):
+                    if member.type == "property_declaration":
+                        pname, ptype = swift_property(member)
+                        if pname == name:
+                            return ptype
+                return None
+            scope = scope.parent
+        return None
+
+    def _swift_describe(self, expr: Any, cache: Dict[Any, Any], depth: int = 0) -> Optional[Tuple[str, list]]:
+        if expr is None or depth > 8:
+            return None
+        t = expr.type
+        if t == "self_expression":
+            owner = self._enclosing_type(expr)
+            name = owner.child_by_field_name("name") if owner is not None else None
+            return (self._get_node_text(name), []) if name is not None else None
+        if t == "simple_identifier":
+            declared = self._swift_binding(expr, cache)
+            return (declared, []) if declared else None
+        if t == "navigation_expression":
+            suffix = expr.child_by_field_name("suffix")
+            ident = suffix.child_by_field_name("suffix") if suffix is not None else None
+            if ident is None or ident.type != "simple_identifier":
+                return None
+            base = self._swift_describe(expr.child_by_field_name("target"), cache, depth + 1)
+            return (base[0], base[1] + [["field", self._get_node_text(ident)]]) if base else None
+        if t in ("call_expression", "constructor_expression"):
+            callee = expr.named_children[0] if expr.named_children else None
+            if callee is not None and callee.type in ("simple_identifier", "user_type"):
+                text = self._get_node_text(callee)
+                if text[:1].isupper():
+                    return (text, [])
+            return None
+        if t in ("postfix_expression", "force_unwrap_expression", "optional_chaining_expression"):
+            inner = expr.named_children[0] if expr.named_children else None
+            return self._swift_describe(inner, cache, depth + 1)
+        return None
+
+    def _parse_calls(self, captures: list, source_code: str, path: Path, variables: list[Dict[str, Any]] = []) -> list[Dict[str, Any]]:
+        calls = []
+        seen_calls = set()
+        binding_cache: Dict[Any, Any] = {}
+        
+        # Index variables for fast lookup
+        var_map = {}
+        for v in variables:
+            key = (v['name'], v['context'])
+            var_map[key] = v['type']
+
+        for node, capture_name in captures:
+            if capture_name == "call_node":
+                try:
+                    start_line = node.start_point[0] + 1
+                    
+                    call_name = "unknown"
+                    base_obj = None
+                    
+                    # Extract function name from call expression
+                    # call_expression can have various structures
+                    first_child = node.children[0] if node.children else None
+                    
+                    if first_child:
+                        if first_child.type == "simple_identifier":
+                            call_name = self._get_node_text(first_child)
+                        elif first_child.type == "navigation_expression":
+                            # obj.method() pattern
+                            for child in first_child.children:
+                                if child.type == "simple_identifier":
+                                    if not base_obj:
+                                        base_obj = self._get_node_text(child)
+                                elif child.type == "navigation_suffix":
+                                    for subchild in child.children:
+                                        if subchild.type == "simple_identifier":
+                                            call_name = self._get_node_text(subchild)
+                        elif first_child.type == "user_type":
+                            # Constructor<Generic>() pattern
+                            for child in first_child.children:
+                                if child.type == "type_identifier":
+                                    call_name = self._get_node_text(child)
+                                    break
+                    
+                    if call_name == "unknown":
+                        continue
+                    
+                    full_name = f"{base_obj}.{call_name}" if base_obj else call_name
+                    ctx_name, ctx_type, ctx_line = self._get_parent_context(node)
+                    
+                    # Type inference: describe the receiver (self, parameter,
+                    # local, property, or a chain of properties) first.
+                    inferred_type = None
+                    receiver_chain = None
+                    described = None
+                    if first_child is not None and first_child.type == "navigation_expression":
+                        try:
+                            described = self._swift_describe(first_child.child_by_field_name("target"), binding_cache)
+                        except Exception:  # noqa: BLE001 - inference must never break parsing
+                            described = None
+                    if described and described[0]:
+                        from .member_types import type_name
+                        if described[1]:
+                            receiver_chain = {"lang": "swift", "base": described[0], "steps": described[1]}
+                        else:
+                            inferred_type = type_name("swift", described[0])
+                    elif base_obj:
+                        inferred_type = var_map.get((base_obj, ctx_name))
+                        if not inferred_type:
+                            inferred_type = var_map.get((base_obj, None))
+                        if not inferred_type:
+                            for (vname, vctx), vtype in var_map.items():
+                                if vname == base_obj:
+                                    inferred_type = vtype
+                                    break
+
+                    # Both were audit findings (#1538): class_context was
+                    # hardcoded (None, None) — dead for super/self resolution —
+                    # and args was hardcoded [].
+                    cls_name, _cls_type, cls_line = self._get_parent_context(
+                        node,
+                        types=("class_declaration", "struct_declaration",
+                               "enum_declaration", "protocol_declaration",
+                               "extension_declaration"),
+                    )
+                    args = []
+                    for child in node.children:
+                        if child.type == "call_suffix":
+                            for va in child.children:
+                                if va.type == "value_arguments":
+                                    for arg in va.children:
+                                        if arg.type == "value_argument":
+                                            args.append(self._get_node_text(arg))
+
+                    call_entry = {
+                        "name": call_name,
+                        "full_name": full_name,
+                        "line_number": start_line,
+                        "args": args,
+                        "inferred_obj_type": inferred_type,
+                        "context": (ctx_name, ctx_type, ctx_line),
+                        "class_context": (cls_name, cls_line) if cls_name else None,
+                        "lang": self.language_name,
+                        "is_dependency": False
+                    }
+                    if receiver_chain is not None:
+                        call_entry["receiver_chain"] = receiver_chain
+                    calls.append(call_entry)
+                except Exception as e:
+                    # A bare continue swallowed every extraction failure with
+                    # no trace at all (#1538); keep indexing but say so.
+                    debug_log(f"Swift call extraction failed at line {node.start_point[0] + 1}: {e}")
+                    continue
+        return calls
+
+    def _extract_parameter_name(self, param_node: Any) -> Optional[str]:
+        """Extract parameter name from a parameter node."""
+        # Swift parameters can have external and internal names
+        # parameter: external_name? internal_name: type
+        for child in param_node.children:
+            if child.type == "simple_identifier":
+                return self._get_node_text(child)
+        return None
+
+def pre_scan_swift(files: list[Path], parser_wrapper) -> dict:
+    """Pre-scan Swift files to build a map of class/struct/enum/protocol names to file paths."""
+    name_to_files = {}
+    for path in files:
+        try:
+            with open(path, 'r', encoding='utf-8', errors='ignore') as f:
+                content = f.read()
+            
+            # Extract classes, structs, enums, protocols
+            matches = re.finditer(r'\b(class|struct|enum|protocol)\s+(\w+)', content)
+            
+            for match in matches:
+                name = match.group(2)
+                if name not in name_to_files:
+                    name_to_files[name] = []
+                name_to_files[name].append(str(path))
+                    
+        except Exception:
+            pass
+    return name_to_files
