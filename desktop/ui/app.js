@@ -185,7 +185,9 @@
   $("about-btn").addEventListener("click", async () => {
     try { $("about-version").textContent = await tauri.app.getVersion(); } catch (_) { /* unknown */ }
     $("about").showModal();
+    document.body.classList.add("dialog-open");
   });
+  $("about").addEventListener("close", () => document.body.classList.remove("dialog-open"));
   $("about-close").addEventListener("click", () => $("about").close());
   $("about").addEventListener("click", (e) => {
     const link = e.target.closest("a[href]");
