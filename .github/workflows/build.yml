@@ -106,6 +106,20 @@ jobs:
           grep -E 'viz[\\/]+static[\\/]+graph\.html' archive.txt > /dev/null \
             || { echo "::error::graph page missing from the binary"; grep -i "viz" archive.txt | head -20; exit 1; }
 
+      # The tree-sitter grammars, shipped with the desktop app so that a first
+      # index needs no network (tree-sitter-language-pack downloads them).
+      - name: Prefetch the tree-sitter grammars
+        shell: bash
+        env:
+          TREE_SITTER_LANGUAGE_PACK_CACHE_DIR: ${{ github.workspace }}/grammars
+        run: python scripts/prefetch_grammars.py
+
+      - name: Upload the grammars
+        uses: actions/upload-artifact@v4
+        with:
+          name: grammars-${{ matrix.artifact_name }}
+          path: grammars/
+
       - name: Rename artifact (Linux/Mac)
         if: runner.os != 'Windows'
         run: mv dist/cviz dist/${{ matrix.artifact_name }}
@@ -165,6 +179,89 @@ jobs:
           name: code-visualizer-vscode-vsix
           path: extensions/vscode/code-visualizer-vscode-*.vsix
 
+  # The desktop app (desktop/): Tauri, with the cviz binary and the grammars
+  # of its platform. Not signed: see desktop/README.md.
+  desktop:
+    name: Desktop app on ${{ matrix.os }}
+    needs: build
+    if: github.event_name != 'pull_request'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact_name: cviz-linux-x86_64
+            sidecar: cviz-x86_64-unknown-linux-gnu
+            bundles: deb,appimage
+          - os: windows-latest
+            artifact_name: cviz-windows.exe
+            sidecar: cviz-x86_64-pc-windows-msvc.exe
+            bundles: nsis
+          - os: macos-latest
+            artifact_name: cviz-macos-arm64
+            sidecar: cviz-aarch64-apple-darwin
+            bundles: dmg
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set the version from the tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: python3 scripts/bump_version.py "${{ github.ref_name }}"
+
+      - name: System libraries (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file \
+            libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri
+
+      - name: Download the cviz binary
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: sidecar
+
+      - name: Download the grammars
+        uses: actions/download-artifact@v4
+        with:
+          name: grammars-${{ matrix.artifact_name }}
+          path: desktop/src-tauri/grammars
+
+      - name: Place the cviz binary
+        shell: bash
+        run: |
+          mkdir -p desktop/src-tauri/binaries
+          mv "sidecar/${{ matrix.artifact_name }}" "desktop/src-tauri/binaries/${{ matrix.sidecar }}"
+          chmod +x "desktop/src-tauri/binaries/${{ matrix.sidecar }}"
+
+      - name: Build
+        working-directory: desktop
+        run: |
+          npm ci
+          npx tauri build --bundles ${{ matrix.bundles }}
+
+      - name: Upload the app
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-${{ matrix.artifact_name }}
+          path: |
+            desktop/src-tauri/target/release/bundle/deb/*.deb
+            desktop/src-tauri/target/release/bundle/appimage/*.AppImage
+            desktop/src-tauri/target/release/bundle/nsis/*.exe
+            desktop/src-tauri/target/release/bundle/dmg/*.dmg
+
   # The one-line installers (scripts/install.sh, install.ps1) on each OS,
   # with the wheel just built: uv, then the tool, then `cviz` on the PATH.
   install-scripts:
@@ -213,7 +310,7 @@ jobs:
 
   release:
     name: Create Release
-    needs: [python-dist, build, package-vsix, tests, install-scripts]
+    needs: [python-dist, build, package-vsix, tests, install-scripts, desktop]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
@@ -245,6 +342,10 @@ jobs:
             artifacts/code-visualizer-vscode-vsix/*.vsix
             artifacts/installers/install.sh
             artifacts/installers/install.ps1
+            artifacts/desktop-*/**/*.deb
+            artifacts/desktop-*/**/*.AppImage
+            artifacts/desktop-*/**/*.exe
+            artifacts/desktop-*/**/*.dmg
           draft: false
           prerelease: false
         env:

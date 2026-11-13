@@ -61,6 +61,7 @@ The fork is distributed as `code-visualizer` (not on PyPI): import package
 | `code_visualizer-X.Y.Z-py3-none-any.whl` | The engine, for `uv tool install` (what the installers use) |
 | `cviz-macos-arm64`, `cviz-linux-x86_64`, `cviz-windows.exe` | The engine as a single command-line program, no Python needed (run it from a terminal, it is not an app) |
 | `code-visualizer-vscode-X.Y.Z.vsix` | The VS Code / Cursor extension |
+| `Code.Visualizer_X.Y.Z_aarch64.dmg`, `Code.Visualizer_X.Y.Z_x64-setup.exe`, `.deb`, `.AppImage` | The desktop app: one tab per repository, nothing else to install (not signed: macOS asks once to allow it in *System Settings › Privacy & Security*, Windows shows a SmartScreen warning: *More info › Run anyway*) |
 
 From the folder of the repository to look at:
 

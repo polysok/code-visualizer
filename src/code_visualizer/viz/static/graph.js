@@ -180,6 +180,12 @@
       } catch (e) { setStatus(`Could not open: ${e.message}`, true); }
       return;
     }
+    // Inside the desktop app (a tab is an iframe), a custom-scheme navigation
+    // goes nowhere: the app opens the URL with the system instead.
+    if (window.parent !== window) {
+      window.parent.postMessage({ type: "cviz:open-url", url: ideUrl(target, line) }, "*");
+      return;
+    }
     // A custom-scheme navigation does not leave the page; if no handler is
     // registered the browser silently ignores it — hence the server fallback.
     window.location.href = ideUrl(target, line);
@@ -2076,6 +2082,9 @@
     } catch (e) { setStatus(e.message, true); }
     finally { btn.disabled = false; }
   });
+
+  // Inside the desktop app, the tab bar has the logo and the About window.
+  if (window.parent !== window) document.body.classList.add("embedded");
 
   // ── About: the logo before "live" opens the version and the credits ────
   $("about-btn").addEventListener("click", () => {

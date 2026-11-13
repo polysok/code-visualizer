@@ -3,7 +3,8 @@
     python scripts/bump_version.py 0.9.8
 
 Updates pyproject.toml, extensions/vscode/package.json and its
-package-lock.json (both of its version fields). The release workflow refuses
+package-lock.json (both of its version fields), and the desktop app's
+package.json, tauri.conf.json and Cargo.toml. The release workflow refuses
 a tag vX.Y.Z unless pyproject.toml and package.json both say X.Y.Z, so bump
 with this script, commit, then tag vX.Y.Z.
 """
@@ -40,7 +41,22 @@ def main(version: str) -> int:
     data.setdefault("packages", {}).setdefault("", {})["version"] = version
     lock.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
-    for path in (pyproject, package, lock):
+    # The desktop app (desktop/): its package.json, Tauri config and crate.
+    desktop = ROOT / "desktop"
+    desktop_package = desktop / "package.json"
+    text = desktop_package.read_text(encoding="utf-8")
+    text = re.sub(r'^(  "version": )"[^"]*"', rf'\g<1>"{version}"', text, count=1, flags=re.M)
+    desktop_package.write_text(text, encoding="utf-8")
+    tauri_conf = desktop / "src-tauri" / "tauri.conf.json"
+    text = tauri_conf.read_text(encoding="utf-8")
+    text = re.sub(r'^(  "version": )"[^"]*"', rf'\g<1>"{version}"', text, count=1, flags=re.M)
+    tauri_conf.write_text(text, encoding="utf-8")
+    cargo = desktop / "src-tauri" / "Cargo.toml"
+    text = cargo.read_text(encoding="utf-8")
+    text = re.sub(r'(?m)^version = "[^"]*"', f'version = "{version}"', text, count=1)
+    cargo.write_text(text, encoding="utf-8")
+
+    for path in (pyproject, package, lock, desktop_package, tauri_conf, cargo):
         print(f"{path.relative_to(ROOT)}: {version}")
     print(f"next: git commit -am 'chore(release): {version}' && git tag v{version} && git push origin main v{version}")
     return 0
