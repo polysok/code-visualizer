@@ -40,7 +40,9 @@ cd "$ROOT"
 if [ "$APP_ONLY" = 0 ] || [ ! -f "$SIDECAR" ]; then
     step "1/3 cviz binary (PyInstaller, a few minutes)"
     uv run python -c "import PyInstaller" 2>/dev/null || uv pip install --quiet pyinstaller
-    uv run pyinstaller cviz.spec --clean --noconfirm --log-level WARN
+    # Errors only: PyInstaller warns about optional modules and Windows DLLs
+    # it does not find on this system; the release workflow shows them all.
+    uv run pyinstaller cviz.spec --clean --noconfirm --log-level ERROR
     mkdir -p "$TAURI/binaries"
     cp "dist/cviz$EXE" "$SIDECAR"
     chmod +x "$SIDECAR"

@@ -29,8 +29,6 @@ search_paths.append(Path(site.getusersitepackages()))
 # Ensure we only have unique, existing paths
 search_paths = list(set([p for p in search_paths if p.exists()]))
 
-print(f"Detected Platform: {sys.platform}")
-print(f"Searching for dependencies in: {[str(p) for p in search_paths]}")
 
 # ── 1. Component Lists (Binaries, Datas, Hidden Imports) ───────────────────
 binaries = []
@@ -124,7 +122,6 @@ hidden_imports = [
     'httpcore',
     'importlib',
     'asyncio',
-    'pkg_resources',
     'threading',
     'subprocess',
     'socket',
@@ -159,12 +156,8 @@ def add_binary(package_path, pattern, target_subdir=None):
 # tree-sitter core
 add_binary('tree_sitter', ext)
 
-# tree-sitter-language-pack: ALL language bindings
-add_binary('tree_sitter_language_pack/bindings', ext)
-
-# other tree-sitter bindings
-add_binary('tree_sitter_yaml', ext)
-add_binary('tree_sitter_embedded_template', ext)
+# Grammars: tree-sitter-language-pack downloads them on first use (the
+# desktop app ships them, see desktop/README.md); C# comes as its own package.
 add_binary('tree_sitter_c_sharp', ext)
 
 # LadybugDB (the only graph backend): Python package plus its native engine
