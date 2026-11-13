@@ -68,7 +68,8 @@ body { display: flex; flex-direction: column; background: var(--bg); color: var(
 
 /* About: the same window as the graph page's. */
 dialog { padding: 20px 22px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); color: var(--text); box-shadow: 0 6px 24px rgba(0, 0, 0, .25); }
-dialog::backdrop { background: rgba(0, 0, 0, .45); }
+/* What lies under the open dialog is dimmed and blurred, as in the graph page. */
+dialog::backdrop { background: rgba(0, 0, 0, .35); -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px); }
 .about { width: min(460px, calc(100vw - 32px)); text-align: center; }
 .about .about-logo { width: 64px; height: 64px; margin: 4px auto 6px; display: block; }
 .about h2 { margin: 0 0 2px; font-size: 16px; }
