@@ -5,13 +5,20 @@
   --font: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   color-scheme: light;
 }
+/* "system" follows the OS; the theme picked in the graph pages forces it. */
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     --bg: #16161a; --surface: #1f1f25; --text: #e8e8ee; --muted: #9b9ba8;
     --border: #3a3a45; --accent: #8b7ff5; --danger: #f56565;
     color-scheme: dark;
   }
 }
+:root[data-theme="dark"] {
+  --bg: #16161a; --surface: #1f1f25; --text: #e8e8ee; --muted: #9b9ba8;
+  --border: #3a3a45; --accent: #8b7ff5; --danger: #f56565;
+  color-scheme: dark;
+}
+:root[data-theme="light"] { color-scheme: light; }
 * { box-sizing: border-box; }
 html, body { height: 100%; margin: 0; }
 body { display: flex; flex-direction: column; background: var(--bg); color: var(--text); font: 13px/1.4 var(--font); overflow: hidden; }

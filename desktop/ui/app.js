@@ -6,6 +6,11 @@
   const tauri = window.__TAURI__;
   const invoke = tauri.core.invoke;
   const STORE_KEY = "cviz.desktop.tabs";
+  // The graph pages' settings (theme, IDE…): their own storage does not
+  // outlive the app (a tab is an iframe from another origin), so the app keeps
+  // them and hands them to every page it opens (graph.html).
+  const PAGE_STORE_KEY = "cviz.desktop.pageStorage";
+  const PAGE_SETTINGS_KEY = "cviz.graph.settings";
   const MAX_LOG = 300;
   const $ = (id) => document.getElementById(id);
 
@@ -14,6 +19,18 @@
   let active = null;
 
   const baseName = (p) => p.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || p;
+
+  let pageStore = {};
+  try { pageStore = JSON.parse(localStorage.getItem(PAGE_STORE_KEY) || "{}") || {}; } catch (_) { pageStore = {}; }
+  function pageTheme() {
+    try { return (JSON.parse(pageStore[PAGE_SETTINGS_KEY] || "{}") || {}).theme || "system"; } catch (_) { return "system"; }
+  }
+  // "system" follows the OS; light / dark force it, as in the graph pages.
+  function applyTheme(theme) {
+    if (theme === "light" || theme === "dark") document.documentElement.dataset.theme = theme;
+    else delete document.documentElement.dataset.theme;
+  }
+  applyTheme(pageTheme());
 
   function save() {
     try {
@@ -45,7 +62,7 @@
       if (!t.view.querySelector("iframe")) {
         t.view.innerHTML = "";
         const frame = document.createElement("iframe");
-        frame.src = t.url;
+        frame.src = `${t.url}#cviz-storage=${encodeURIComponent(JSON.stringify(pageStore))}`;
         frame.title = `Dependency graph of ${t.name}`;
         t.view.appendChild(frame);
       }
@@ -143,11 +160,24 @@
     }
   });
 
-  // IDE links from the graph pages (see openInIde in graph.js).
+  // From the graph pages: IDE links (openInIde in graph.js) and their
+  // settings (graph.html); a theme change reaches the other tabs too.
   window.addEventListener("message", (event) => {
     const data = event.data || {};
     if (data.type === "cviz:open-url" && typeof data.url === "string") {
       invoke("open_url", { url: data.url }).catch((e) => console.warn(e));
+    } else if (data.type === "cviz:storage" && typeof data.key === "string" && data.key.startsWith("cviz.graph.")) {
+      const before = pageTheme();
+      if (data.value === null) delete pageStore[data.key];
+      else pageStore[data.key] = String(data.value);
+      try { localStorage.setItem(PAGE_STORE_KEY, JSON.stringify(pageStore)); } catch (_) { /* not kept */ }
+      const theme = pageTheme();
+      if (theme !== before) {
+        applyTheme(theme);
+        document.querySelectorAll(".view iframe").forEach((frame) => {
+          if (frame.contentWindow !== event.source) frame.contentWindow.postMessage({ type: "cviz:theme", theme }, "*");
+        });
+      }
     }
   });
 

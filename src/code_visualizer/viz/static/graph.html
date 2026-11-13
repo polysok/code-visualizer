@@ -7,6 +7,30 @@
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='7' fill='%235b4ce0'/%3E%3Ccircle cx='5' cy='8' r='4' fill='%23b7791f'/%3E%3Ccircle cx='27' cy='24' r='4' fill='%230f8a7a'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="/graph-assets/graph.css">
   <script>
+    // Inside the desktop app (a tab is an iframe from another origin), the
+    // page's own storage does not outlive the app: the app keeps the
+    // cviz.graph.* settings, hands them over in the URL fragment, and gets
+    // every change back.
+    if (window.parent !== window) {
+      try {
+        var kept = /(?:^#|&)cviz-storage=([^&]*)/.exec(location.hash);
+        if (kept) {
+          var values = JSON.parse(decodeURIComponent(kept[1]));
+          for (var key in values) if (/^cviz\.graph\./.test(key)) localStorage.setItem(key, values[key]);
+          history.replaceState(null, "", location.pathname + location.search);
+        }
+      } catch (_) {}
+      (function (proto) {
+        var set = proto.setItem, remove = proto.removeItem;
+        var tell = function (store, key, value) {
+          if (store === window.localStorage && /^cviz\.graph\./.test(key)) {
+            window.parent.postMessage({ type: "cviz:storage", key: String(key), value: value }, "*");
+          }
+        };
+        proto.setItem = function (key, value) { set.call(this, key, value); tell(this, key, String(value)); };
+        proto.removeItem = function (key) { remove.call(this, key); tell(this, key, null); };
+      })(Storage.prototype);
+    }
     // Apply the saved theme before the first paint (graph.js owns the setting).
     try {
       var t = (JSON.parse(localStorage.getItem("cviz.graph.settings") || "{}") || {}).theme;

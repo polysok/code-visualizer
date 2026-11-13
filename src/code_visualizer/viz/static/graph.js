@@ -2083,8 +2083,19 @@
     finally { btn.disabled = false; }
   });
 
-  // Inside the desktop app, the tab bar has the logo and the About window.
-  if (window.parent !== window) document.body.classList.add("embedded");
+  // Inside the desktop app, the tab bar has the logo and the About window;
+  // a theme picked in another tab applies here too.
+  if (window.parent !== window) {
+    document.body.classList.add("embedded");
+    window.addEventListener("message", (e) => {
+      const data = e.data || {};
+      if (e.source === window.parent && data.type === "cviz:theme" && data.theme !== settings.theme) {
+        settings.theme = data.theme;
+        applyTheme(settings.theme);
+        saveSettings(settings);
+      }
+    });
+  }
 
   // ── About: the logo before "live" opens the version and the credits ────
   $("about-btn").addEventListener("click", () => {
