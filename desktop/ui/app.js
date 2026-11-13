@@ -103,6 +103,13 @@
       t.state = "error"; t.error = String(e);
     }
     if (tabs.includes(t)) { renderTab(t); renderView(t); }
+    updateSettingsButton();
+  }
+
+  // The gear opens the settings of the graph page shown (graph.js); they
+  // apply to every tab (the app keeps them, see PAGE_STORE_KEY).
+  function updateSettingsButton() {
+    $("settings-btn").disabled = !(active && active.state === "ready");
   }
 
   function activate(t) {
@@ -111,6 +118,7 @@
     $("home").hidden = !!t;
     if (t && t.state === "idle") start(t);
     if (t) t.tab.scrollIntoView({ block: "nearest", inline: "nearest" });
+    updateSettingsButton();
     save();
   }
 
@@ -193,6 +201,11 @@
     const link = e.target.closest("a[href]");
     if (link) { e.preventDefault(); invoke("open_url", { url: link.href }).catch(() => {}); return; }
     if (e.target === $("about")) $("about").close();  // click outside
+  });
+
+  $("settings-btn").addEventListener("click", () => {
+    const frame = active && active.view.querySelector("iframe");
+    if (frame) frame.contentWindow.postMessage({ type: "cviz:open-settings" }, "*");
   });
 
   $("add").addEventListener("click", pickRepository);

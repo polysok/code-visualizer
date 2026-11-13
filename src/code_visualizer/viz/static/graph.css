@@ -505,4 +505,4 @@ body.changes-mode .legend-list .changes-only { display: flex; }
 /* Nothing picked: a line under the whole field shows there is something to fill. */
 .compare select.unpicked { border-radius: 0; border-bottom-color: var(--muted); }
 .compare select.unpicked:hover, .compare select.unpicked:focus { border-bottom-color: var(--accent); }
-body.embedded #about-btn { display: none; }
+body.embedded #about-btn, body.embedded #btn-settings { display: none; }

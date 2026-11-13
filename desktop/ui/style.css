@@ -45,6 +45,9 @@ body { display: flex; flex-direction: column; background: var(--bg); color: var(
 .tab .close:hover { background: color-mix(in srgb, var(--text) 10%, transparent); color: var(--text); }
 .add { align-self: center; width: 28px; height: 28px; margin-left: 4px; border: 0; border-radius: 6px; background: none; color: var(--muted); font: 18px/1 var(--font); cursor: pointer; }
 .add:hover { color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.settings-btn { align-self: center; display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; margin-left: auto; padding: 0; border: 0; border-radius: 6px; background: none; color: var(--muted); cursor: pointer; }
+.settings-btn:hover:not(:disabled) { color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.settings-btn:disabled { opacity: .35; cursor: default; }
 @keyframes pulse { 50% { opacity: .35; } }
 
 #views { flex: 1; position: relative; min-height: 0; }

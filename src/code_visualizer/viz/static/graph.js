@@ -2084,7 +2084,9 @@
     document.body.classList.add("embedded");
     window.addEventListener("message", (e) => {
       const data = e.data || {};
-      if (e.source === window.parent && data.type === "cviz:theme" && data.theme !== settings.theme) {
+      if (e.source === window.parent && data.type === "cviz:open-settings") {
+        if (!$("settings").open) $("btn-settings").click();
+      } else if (e.source === window.parent && data.type === "cviz:theme" && data.theme !== settings.theme) {
         settings.theme = data.theme;
         applyTheme(settings.theme);
         saveSettings(settings);
