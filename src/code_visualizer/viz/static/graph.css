@@ -99,12 +99,10 @@ body {
 }
 #toolbar > * { pointer-events: auto; }
 #toolbar .spacer { pointer-events: none; }
-/* Top left of the graph: the entry points (or the changes) and, right of
-   them, the artifact the graph is centred on. */
+/* Top left of the graph: the entry points. */
 .top-left { position: absolute; left: 12px; top: 58px; bottom: 140px; z-index: 4; display: flex; align-items: flex-start; gap: 8px; pointer-events: none; }
 .top-left > * { pointer-events: auto; }
 .top-left .entries { position: static; }
-.center-label { font-family: var(--font); font-size: 12px; max-width: 32ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 5px 10px; color: var(--text); background: var(--surface); background: color-mix(in srgb, var(--surface) 85%, transparent); -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px); border: 1px solid var(--border); border-radius: 8px; }
 .sep { width: 1px; height: 18px; background: var(--border); }
 .spacer { flex: 1; }
 .group { display: inline-flex; gap: 4px; align-items: center; }

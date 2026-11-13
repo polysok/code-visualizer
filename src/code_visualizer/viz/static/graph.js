@@ -269,9 +269,6 @@
     });
     const center = state.byId.get(data.center.id);
     if (center) center.expanded = true;
-    $("center-label").textContent = `${data.center.label}${data.center.line ? ":" + data.center.line : ""}`;
-    $("center-label").title = `${data.center.path || ""}`;
-    $("center-label").hidden = state.mode === "changes";  // the toolbar says "vs <branch>" there
     document.title = `${data.center.label} · CViz graph`;
     render();
     // Live reloads keep the user's selection; navigation selects the center.
@@ -1807,7 +1804,6 @@
     state.mode = on ? "changes" : "graph";
     document.body.classList.toggle("changes-mode", on);
     $("ch-show").hidden = on || $("changes").hidden || !state.changesTarget;
-    $("center-label").hidden = on;  // the toolbar says "vs <branch>"
   }
 
   // The refresh and close icons only make sense once a branch is picked.
@@ -1889,7 +1885,6 @@
     if (wasOn) {
       // The "Changes vs …" pseudo-center goes, whatever is shown next.
       state.center = null;
-      $("center-label").hidden = true;
       document.title = "Code Visualizer";
       const back = state.lastTarget || entryPoints[0];
       if (back) load(back);
