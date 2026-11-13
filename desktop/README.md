@@ -15,8 +15,16 @@ embeds the `cviz` program: nothing else to install.
 
 ## Build
 
-Needs Rust and Node, and the `cviz` binary of the platform, built from
-`cviz.spec` (the release workflow builds it):
+Needs uv, Rust and Node. One command rebuilds everything from the current
+sources:
+
+```bash
+desktop/build.sh            # the cviz binary, the grammars if missing, the app
+desktop/build.sh --app      # the app only (after a change to desktop/ alone)
+desktop/build.sh --open     # then quit the running app and open the new one
+```
+
+By hand, the same steps:
 
 ```bash
 # from the repository root: the cviz binary (dist/cviz) and the grammars
