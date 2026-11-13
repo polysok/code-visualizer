@@ -303,7 +303,8 @@ body.resizing-panel { cursor: col-resize; user-select: none; }
 .path { word-break: break-all; }
 section h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin: 14px 0 6px; }
 .count { color: var(--text); }
-.source { background: var(--surface-2); background: color-mix(in srgb, var(--surface-2) 70%, transparent); border: 1px solid var(--border); border-radius: 6px; padding: 8px; overflow: auto; max-height: 60vh; font-size: 12px; line-height: 1.5; margin: 0; white-space: pre; tab-size: 4; }
+/* No scroll of its own: the panel scrolls; long lines wrap. */
+.source { background: var(--surface-2); background: color-mix(in srgb, var(--surface-2) 70%, transparent); border: 1px solid var(--border); border-radius: 6px; padding: 8px; font-size: 12px; line-height: 1.5; margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; tab-size: 4; }
 .source .kw { color: var(--syn-kw); }
 .source .str { color: var(--syn-str); }
 .source .num, .source .lit { color: var(--syn-num); }
