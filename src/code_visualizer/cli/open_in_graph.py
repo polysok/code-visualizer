@@ -2,11 +2,16 @@
 
 The IDE-side half of the IDE <-> web integration. Every editor integration
 (VS Code command, Rider External Tool, Zed task) ends up here or does the same
-two steps:
+steps:
 
-1. ``POST /api/focus`` so a graph tab that is already open recentres on the
-   artifact (no tab pile-up);
+0. when the desktop app runs (``~/.code-visualizer/desktop.json``), hand it
+   the artifact: it comes forward on the repository's tab (opened and its
+   server started if needed), centred on it;
+1. else ``POST /api/focus`` so a graph tab that is already open recentres on
+   the artifact (no tab pile-up);
 2. if no tab is listening, open ``/graph?path=…&line=…`` in the browser.
+
+``--browser`` (or ``CVIZ_OPEN_IN=browser``) skips the desktop app.
 
 When the server is not running it is started in the background
 (``cviz graph --no-browser``) unless ``--no-start`` or ``CVIZ_OPEN_NO_START=1``.
@@ -93,6 +98,33 @@ def focus_existing(server: str, path: str, line: Optional[int]) -> int:
         return 0
 
 
+def desktop_file() -> Path:
+    """Where the desktop app records its IDE endpoint (desktop/src-tauri, ide_link)."""
+    custom = os.getenv("CVIZ_DESKTOP_FILE")
+    return Path(custom) if custom else Path.home() / ".code-visualizer" / "desktop.json"
+
+
+def open_in_desktop(path: str, line: Optional[int], repo: Optional[str] = None) -> bool:
+    """Hand the artifact to the running desktop app; False when none answers."""
+    try:
+        record = json.loads(desktop_file().read_text(encoding="utf-8"))
+        url, token = str(record["url"]).rstrip("/"), str(record["token"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+    if not url.startswith(("http://127.0.0.1:", "http://localhost:")):
+        return False
+    payload = {"path": path, "line": line}
+    if repo:
+        payload["repo"] = repo
+    req = urllib.request.Request(f"{url}/open", data=json.dumps(payload).encode(), method="POST",
+                                 headers={"Content-Type": "application/json", "X-CViz-Token": token})
+    try:
+        with urllib.request.urlopen(req, timeout=2.0) as resp:  # noqa: S310 - loopback URL
+            return resp.status == 200
+    except Exception:  # noqa: BLE001 - not running (stale file) or refused
+        return False
+
+
 def _cviz_command() -> List[str]:
     exe = shutil.which("cviz")
     if exe:
@@ -158,7 +190,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--depth", type=int, default=None, help="Initial depth (1-5)")
     parser.add_argument("--ide", default=os.getenv("CVIZ_DEFAULT_IDE"),
                         help="IDE the page should open code in (vscode, cursor, rider, idea, zed)")
-    parser.add_argument("--new-tab", action="store_true", help="Always open a new tab")
+    parser.add_argument("--new-tab", action="store_true", help="Always open a new browser tab")
+    parser.add_argument("--browser", action="store_true",
+                        help="Open in the browser even when the desktop app runs (env CVIZ_OPEN_IN=browser)")
     parser.add_argument("--no-start", action="store_true",
                         help="Do not start 'cviz graph' when the server is not running")
     parser.add_argument("--print", dest="print_only", action="store_true",
@@ -169,6 +203,16 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.line:
         line = args.line
     path = str(Path(path_str).expanduser().resolve())
+
+    browser_only = (args.browser or args.new_tab or args.server or args.print_only
+                    or os.getenv("CVIZ_OPEN_IN", "").lower() == "browser")
+    if not browser_only:
+        from .server_registry import find_repo_root
+
+        if open_in_desktop(path, line, str(find_repo_root(path))):
+            print(f"cviz-open: shown in Code Visualizer: {path}:{line or ''}")
+            return 0
+
     server, alive = resolve_server(path, args.server)
 
     if args.print_only:

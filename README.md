@@ -44,10 +44,12 @@ from any node of the graph, jump back to its code in the IDE.
 | Rider, IntelliJ and the other JetBrains IDEs | External Tool, installed by `cviz ide jetbrains` (`extensions/rider/`) | *Tools › CViz › Open in Dependency Graph* |
 | Zed | Task, installed by `cviz ide zed <repo>` (`extensions/zed/`) | *CViz: open in dependency graph* |
 
-The extensions find the graph server of the repository, the one started by
-the app included, and open the graph page on the artifact under the cursor
-(in the browser for now). The JetBrains and Zed ones run `cviz-open`: they
-need the command line below.
+When the app runs, it comes forward on the repository's tab (opened, and
+indexed, if needed), centred on the artifact under the cursor; otherwise the
+graph page opens in the browser. VS Code: setting `cviz.graphOpenIn`
+(`browser` to always use the browser); `cviz-open`: `--browser` or
+`CVIZ_OPEN_IN=browser`. The JetBrains and Zed extensions run `cviz-open`:
+they need the command line below.
 
 ## Under the hood
 

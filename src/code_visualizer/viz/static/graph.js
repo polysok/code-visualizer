@@ -1512,6 +1512,8 @@
       if (!ev.path) return;
       load({ path: ev.path, line: ev.line || undefined });
       try { window.focus(); } catch (_) { /* browsers may refuse */ }
+      // In the desktop app, its tab and window come forward.
+      if (window.parent !== window) window.parent.postMessage({ type: "cviz:reveal" }, "*");
     });
   }
   $("live").addEventListener("click", () => {
@@ -2098,7 +2100,10 @@
     document.body.classList.add("embedded");
     window.addEventListener("message", (e) => {
       const data = e.data || {};
-      if (e.source === window.parent && data.type === "cviz:open-settings") {
+      if (e.source === window.parent && data.type === "cviz:focus" && typeof data.path === "string") {
+        // Asked for by an IDE through the app (app.js, ide-open).
+        load({ path: data.path, line: data.line || undefined });
+      } else if (e.source === window.parent && data.type === "cviz:open-settings") {
         if (!$("settings").open) $("btn-settings").click();
       } else if (e.source === window.parent && data.type === "cviz:theme" && data.theme !== settings.theme) {
         settings.theme = data.theme;

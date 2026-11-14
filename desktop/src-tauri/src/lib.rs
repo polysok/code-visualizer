@@ -6,10 +6,13 @@
 //! `cviz graph --watch <repo> --no-browser`: it starts the repository's server,
 //! or, when one already runs (started from a terminal or an IDE), prints its
 //! URL and exits. The app stops only the servers it started.
+//!
+//! IDEs reach the app through a loopback endpoint (see `ide_link`): it brings
+//! the window forward on the repository's tab, centred on the artifact.
 
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader, Read};
-use std::net::TcpStream;
+use std::io::{BufRead, BufReader, Read, Write};
+use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
@@ -262,17 +265,190 @@ fn open_url(app: AppHandle, url: String) -> Result<(), String> {
     app.opener().open_url(url, None::<&str>).map_err(|e| e.to_string())
 }
 
+/// Brings the window forward (from a graph page that an IDE recentred).
+#[tauri::command]
+fn focus_window(app: AppHandle) {
+    reveal(&app);
+}
+
+fn reveal(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
+/// The IDE side of the app: `cviz-open` and the IDE extensions find the app in
+/// ~/.code-visualizer/desktop.json (its URL and a token) and send
+/// `POST /open {"path", "line", "repo"}`. The window comes forward and the
+/// shell (app.js, "ide-open") opens or activates the repository's tab,
+/// centred on the artifact. Loopback only; the token, readable by the user
+/// alone, keeps web pages out (they could post to a local port).
+mod ide_link {
+    use super::*;
+
+    #[derive(serde::Deserialize, serde::Serialize, Clone, Debug, PartialEq)]
+    pub struct OpenRequest {
+        pub path: String,
+        #[serde(default)]
+        pub line: Option<u64>,
+        #[serde(default)]
+        pub repo: Option<String>,
+    }
+
+    /// ~/.code-visualizer/desktop.json, or $CVIZ_DESKTOP_FILE.
+    pub fn link_file() -> Option<PathBuf> {
+        if let Ok(custom) = std::env::var("CVIZ_DESKTOP_FILE") {
+            return Some(PathBuf::from(custom));
+        }
+        let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"))?;
+        Some(PathBuf::from(home).join(".code-visualizer").join("desktop.json"))
+    }
+
+    fn new_token() -> String {
+        use std::collections::hash_map::RandomState;
+        use std::hash::{BuildHasher, Hasher};
+        // RandomState is seeded from the OS's random source.
+        (0..4)
+            .map(|i| {
+                let mut h = RandomState::new().build_hasher();
+                h.write_u64(i);
+                format!("{:016x}", h.finish())
+            })
+            .collect()
+    }
+
+    /// Reads one request: the open request of a valid `POST /open`, else the
+    /// HTTP status to answer.
+    pub fn read_request(stream: &mut impl Read, token: &str) -> Result<OpenRequest, (u16, &'static str)> {
+        let mut reader = BufReader::new(stream);
+        let mut first = String::new();
+        reader.read_line(&mut first).map_err(|_| (400, "bad request"))?;
+        let mut parts = first.split_whitespace();
+        let (method, target) = (parts.next().unwrap_or(""), parts.next().unwrap_or(""));
+        let (mut length, mut given) = (0usize, String::new());
+        loop {
+            let mut header = String::new();
+            if reader.read_line(&mut header).map_err(|_| (400, "bad request"))? == 0 {
+                break;
+            }
+            let header = header.trim_end();
+            if header.is_empty() {
+                break;
+            }
+            if let Some((name, value)) = header.split_once(':') {
+                match name.trim().to_ascii_lowercase().as_str() {
+                    "content-length" => length = value.trim().parse().unwrap_or(0),
+                    "x-cviz-token" => given = value.trim().to_string(),
+                    _ => {}
+                }
+            }
+        }
+        if method != "POST" || target != "/open" {
+            return Err((404, "not found"));
+        }
+        if token.is_empty() || given != token {
+            return Err((403, "forbidden"));
+        }
+        if length > 64 * 1024 {
+            return Err((413, "too large"));
+        }
+        let mut body = vec![0; length];
+        reader.read_exact(&mut body).map_err(|_| (400, "bad request"))?;
+        let open: OpenRequest = serde_json::from_slice(&body).map_err(|_| (400, "invalid JSON"))?;
+        if open.path.is_empty() {
+            return Err((400, "'path' is required"));
+        }
+        Ok(open)
+    }
+
+    fn respond(stream: &mut TcpStream, status: u16, body: &str) {
+        let reason = match status { 200 => "OK", 403 => "Forbidden", 404 => "Not Found", 413 => "Payload Too Large", _ => "Bad Request" };
+        let _ = write!(
+            stream,
+            "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+    }
+
+    /// Listens on a free loopback port and records it in desktop.json.
+    pub fn start<F: Fn(OpenRequest) + Send + 'static>(on_open: F) -> Option<PathBuf> {
+        let listener = TcpListener::bind("127.0.0.1:0").ok()?;
+        let port = listener.local_addr().ok()?.port();
+        let token = new_token();
+        let file = link_file()?;
+        if let Some(dir) = file.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let record = serde_json::json!({
+            "url": format!("http://127.0.0.1:{port}"),
+            "token": token,
+            "pid": std::process::id(),
+        });
+        std::fs::write(&file, record.to_string()).ok()?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600));
+        }
+        thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                let mut stream = stream;
+                let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+                match read_request(&mut stream, &token) {
+                    Ok(open) => {
+                        respond(&mut stream, 200, "{\"ok\":true}");
+                        on_open(open);
+                    }
+                    Err((status, why)) => respond(&mut stream, status, &format!("{{\"error\":\"{why}\"}}")),
+                }
+            }
+        });
+        Some(file)
+    }
+
+    /// Removes desktop.json if it is still this app's (another app may have
+    /// replaced it since).
+    pub fn stop(file: &std::path::Path) {
+        let ours = std::fs::read_to_string(file)
+            .ok()
+            .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+            .and_then(|v| v.get("pid").and_then(|p| p.as_u64()))
+            == Some(std::process::id() as u64);
+        if ours {
+            let _ = std::fs::remove_file(file);
+        }
+    }
+}
+
+/// desktop.json of this app, removed at exit.
+struct LinkFile(Mutex<Option<PathBuf>>);
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .manage(Servers::default())
-        .invoke_handler(tauri::generate_handler![open_repo, close_repo, open_url])
+        .manage(LinkFile(Mutex::new(None)))
+        .setup(|app| {
+            let handle = app.handle().clone();
+            let file = ide_link::start(move |open| {
+                reveal(&handle);
+                let _ = handle.emit("ide-open", open);
+            });
+            *app.state::<LinkFile>().0.lock().unwrap() = file;
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![open_repo, close_repo, open_url, focus_window])
         .build(tauri::generate_context!())
         .expect("error while building the app")
         .run(|app, event| {
             if let RunEvent::Exit = event {
+                if let Some(file) = app.state::<LinkFile>().0.lock().unwrap().take() {
+                    ide_link::stop(&file);
+                }
                 let children: Vec<Child> = app.state::<Servers>().0.lock().unwrap().drain().map(|(_, c)| c).collect();
                 for child in children {
                     stop(child);
@@ -336,5 +512,59 @@ mod grammar_tests {
         assert_eq!(read("libtree_sitter_c.dylib"), b"bundled");
         assert_eq!(read("libtree_sitter_go.dylib"), b"already there");
         let _ = std::fs::remove_dir_all(&base);
+    }
+}
+
+#[cfg(test)]
+mod ide_link_tests {
+    use super::ide_link::*;
+
+    fn request(head: &str, body: &str) -> String {
+        format!("{head}\r\nContent-Length: {}\r\n\r\n{body}", body.len())
+    }
+
+    #[test]
+    fn reads_a_valid_open_request() {
+        let raw = request("POST /open HTTP/1.1\r\nHost: x\r\nX-CViz-Token: abc", r#"{"path":"/r/a.py","line":12,"repo":"/r"}"#);
+        let open = read_request(&mut raw.as_bytes(), "abc").unwrap();
+        assert_eq!(open, OpenRequest { path: "/r/a.py".into(), line: Some(12), repo: Some("/r".into()) });
+    }
+
+    #[test]
+    fn refuses_a_missing_or_wrong_token_and_other_routes() {
+        let body = r#"{"path":"/r/a.py"}"#;
+        let no_token = request("POST /open HTTP/1.1", body);
+        assert_eq!(read_request(&mut no_token.as_bytes(), "abc").unwrap_err().0, 403);
+        let wrong = request("POST /open HTTP/1.1\r\nx-cviz-token: nope", body);
+        assert_eq!(read_request(&mut wrong.as_bytes(), "abc").unwrap_err().0, 403);
+        let route = request("GET /open HTTP/1.1\r\nX-CViz-Token: abc", "");
+        assert_eq!(read_request(&mut route.as_bytes(), "abc").unwrap_err().0, 404);
+        let empty = request("POST /open HTTP/1.1\r\nX-CViz-Token: abc", r#"{"path":""}"#);
+        assert_eq!(read_request(&mut empty.as_bytes(), "abc").unwrap_err().0, 400);
+    }
+
+    #[test]
+    fn serves_requests_and_records_then_removes_its_file() {
+        let file = std::env::temp_dir().join(format!("cviz-desktop-{}.json", std::process::id()));
+        std::env::set_var("CVIZ_DESKTOP_FILE", &file);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let written = start(move |open| { let _ = tx.send(open); }).unwrap();
+        assert_eq!(written, file);
+        let record: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        let (url, token) = (record["url"].as_str().unwrap(), record["token"].as_str().unwrap());
+        assert!(token.len() >= 32);
+
+        let mut stream = std::net::TcpStream::connect(url.trim_start_matches("http://")).unwrap();
+        use std::io::{Read, Write};
+        let body = r#"{"path":"/r/a.py","line":3}"#;
+        write!(stream, "POST /open HTTP/1.1\r\nX-CViz-Token: {token}\r\nContent-Length: {}\r\n\r\n{body}", body.len()).unwrap();
+        let mut answer = String::new();
+        stream.read_to_string(&mut answer).unwrap();
+        assert!(answer.starts_with("HTTP/1.1 200"), "{answer}");
+        let open = rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap();
+        assert_eq!((open.path.as_str(), open.line), ("/r/a.py", Some(3)));
+
+        stop(&file);
+        assert!(!file.exists());
     }
 }

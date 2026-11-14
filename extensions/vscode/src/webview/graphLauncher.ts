@@ -4,6 +4,7 @@ import * as https from "https";
 import * as os from "os";
 import * as path from "path";
 import * as vscode from "vscode";
+import { openInDesktop } from "./desktopLink";
 
 const DEFAULT_SERVER = "http://localhost:9324";
 
@@ -62,6 +63,7 @@ export function registeredServer(filePath: string): string | undefined {
  * Opens the standalone CViz dependency-graph page (served by `cviz graph`) on a
  * file and line, instead of the in-editor webview.
  *
+ * 0. the desktop app when it runs (setting cviz.graphOpenIn, default "app");
  * 1. POST /api/focus so an already-open graph tab recentres (no tab pile-up);
  * 2. otherwise open /graph?path=…&line=… in the default browser;
  * 3. if the server is not running, offer to start `cviz graph --watch` in a
@@ -89,6 +91,13 @@ export class GraphLauncher {
   }
 
   async open(filePath: string, line?: number): Promise<void> {
+    const config = vscode.workspace.getConfiguration("cviz");
+    if (config.get<string>("graphOpenIn", "app") !== "browser" && !config.get<string>("graphServerUrl", "")) {
+      if (await openInDesktop(filePath, line, findRepoRoot(filePath))) {
+        vscode.window.setStatusBarMessage("CViz: shown in Code Visualizer", 2500);
+        return;
+      }
+    }
     this.serverUrl = this.resolveServer(filePath);
     if (!(await this.alive())) {
       const started = await this.offerStart(filePath);

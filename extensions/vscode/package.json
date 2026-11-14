@@ -236,6 +236,16 @@
           "type": "string",
           "default": "",
           "description": "URL of a CViz graph server to always use. Empty (default): the server of the file's repository, found in ~/.code-visualizer/servers.json (each 'cviz graph' records itself there), started if needed."
+        },
+        "cviz.graphOpenIn": {
+          "type": "string",
+          "enum": ["app", "browser"],
+          "enumDescriptions": [
+            "The Code Visualizer desktop app when it runs (on the repository's tab), else the browser",
+            "Always the browser"
+          ],
+          "default": "app",
+          "description": "Where 'CViz: Open in Dependency Graph' shows the artifact."
         }
       }
     },

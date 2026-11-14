@@ -12,6 +12,11 @@ embeds the `cviz` program: nothing else to install.
   stops all of those. The tabs come back at the next start (only the active
   one starts its server right away).
 - *Open in IDE* in a graph page opens the IDE through the system.
+- From the IDE (*Open in Dependency Graph*: VS Code extension, `cviz-open`),
+  the app comes forward on the repository's tab, opened if needed, centred
+  on the artifact. The app records how to reach it in
+  `~/.code-visualizer/desktop.json` (a loopback URL and a token, removed when
+  it quits); with no app running, the IDE opens the graph in the browser.
 
 ## Build
 

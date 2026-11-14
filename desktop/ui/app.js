@@ -62,7 +62,10 @@
       if (!t.view.querySelector("iframe")) {
         t.view.innerHTML = "";
         const frame = document.createElement("iframe");
-        frame.src = `${t.url}#cviz-storage=${encodeURIComponent(JSON.stringify(pageStore))}`;
+        // An artifact asked for by an IDE before the page was up (ide-open).
+        const query = t.pendingFocus ? `?${focusQuery(t.pendingFocus)}` : "";
+        t.pendingFocus = null;
+        frame.src = `${t.url}${query}#cviz-storage=${encodeURIComponent(JSON.stringify(pageStore))}`;
         frame.title = `Dependency graph of ${t.name}`;
         t.view.appendChild(frame);
       }
@@ -199,6 +202,35 @@
     else save();
   }
 
+  // ── From the IDE (lib.rs, ide_link): the tab of the file's repository,
+  // opened if needed, centred on the artifact. ─────────────────────────
+  const norm = (p) => String(p).replace(/\\/g, "/").replace(/\/+$/, "");
+  const focusQuery = (f) => {
+    const params = new URLSearchParams({ path: f.path });
+    if (f.line) params.set("line", String(f.line));
+    return params.toString();
+  };
+  /** The open tab whose folder holds *file* (the deepest one). */
+  function tabFor(file) {
+    const target = norm(file);
+    let best = null;
+    for (const t of tabs) {
+      const root = norm(t.path);
+      if ((target === root || target.startsWith(root + "/")) && (!best || root.length > norm(best.path).length)) best = t;
+    }
+    return best;
+  }
+  tauri.event.listen("ide-open", (event) => {
+    const { path, line, repo } = event.payload || {};
+    if (!path) return;
+    const focus = { path, line: line || null };
+    const t = tabFor(path) || addTab(repo || path.replace(/[\\/][^\\/]*$/, ""), { activate: false });
+    const frame = t.view.querySelector("iframe");
+    if (t.state === "ready" && frame) frame.contentWindow.postMessage({ type: "cviz:focus", ...focus }, "*");
+    else t.pendingFocus = focus;  // the page will open on it (renderView)
+    activate(t);
+  });
+
   async function pickRepository() {
     const path = await tauri.dialog.open({ directory: true, multiple: false, title: "Open a repository" });
     if (typeof path === "string" && path) addTab(path);
@@ -222,7 +254,12 @@
   // settings (graph.html); a theme change reaches the other tabs too.
   window.addEventListener("message", (event) => {
     const data = event.data || {};
-    if (data.type === "cviz:open-url" && typeof data.url === "string") {
+    if (data.type === "cviz:reveal") {
+      // A page recentred by an IDE through its server (/api/focus): show it.
+      const t = tabs.find((x) => { const f = x.view.querySelector("iframe"); return f && f.contentWindow === event.source; });
+      if (t) activate(t);
+      invoke("focus_window").catch(() => {});
+    } else if (data.type === "cviz:open-url" && typeof data.url === "string") {
       invoke("open_url", { url: data.url }).catch((e) => console.warn(e));
     } else if (data.type === "cviz:storage" && typeof data.key === "string" && data.key.startsWith("cviz.graph.")) {
       const before = pageTheme();
