@@ -4,15 +4,17 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import time
 from collections import Counter
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 import os
 from ...core.jobs import JobManager, JobStatus
 from ...utils.debug_log import debug_log, error_logger, info_logger, warning_logger
-from .discovery import discover_files_to_index
+from .discovery import discover_files_to_index, prioritize_files
 from .dotnet_packages import external_type_origins
 from .persistence.writer import GraphWriter
 from .pre_scan import pre_scan_for_imports
@@ -128,66 +130,43 @@ def build_index_summary(
     }
 
 
-async def run_tree_sitter_index_async(
-    path: Path,
-    is_dependency: bool,
-    job_id: Optional[str],
-    cvizignore_path: Optional[str],
-    writer: GraphWriter,
-    job_manager: JobManager,
-    parsers: Dict[str, str],
-    get_parser: Callable[[str], Any],
-    parse_file: Callable[[Path, Path, bool], Dict[str, Any]],
-    add_minimal_file_node: Callable[[Path, Path, bool], None],
-    call_resolution_diagnostics: Optional[List[Dict[str, Any]]] = None,
-    index_summary: Optional[Dict[str, Any]] = None,
-    semantic_search: Optional[bool] = None,
-    companion_roots: Sequence[Path] = (),
-) -> None:
-    """Parse all discovered files, write symbols, then inheritance + CALLS.
+@dataclass
+class _IndexContext:
+    """What the stages of one index share (see run_tree_sitter_index_async)."""
+    path: Path
+    is_dependency: bool
+    job_id: Optional[str]
+    job_manager: JobManager
+    writer: GraphWriter
+    repo_name: str
+    companion_of: Dict[Path, Tuple[Path, bool]]
+    imports_map: dict
+    parse_file: Callable[[Path, Path, bool], Dict[str, Any]]
+    add_minimal_file_node: Callable[[Path, Path, bool], None]
+    call_resolution_diagnostics: Optional[List[Dict[str, Any]]]
+    semantic_search: Optional[bool]
+    companion_roots: Sequence[Path]
 
-    ``semantic_search`` vectorizes the artifacts at the end: None follows
-    SEMANTIC_SEARCH, False leaves it to ``cviz graph`` / ``cviz embed``.
 
-    ``companion_roots`` are other repositories or folders indexed in the same
-    pass (see core.companions): each file is written under its own
-    repository, and calls and inheritance are resolved across all of them.
-    """
-    if job_id:
-        job_manager.update_job(job_id, status=JobStatus.RUNNING)
-
-    repo_root = path if path.is_dir() else path.parent.resolve()
-    await asyncio.to_thread(writer.add_repository_to_graph, repo_root, is_dependency)
-    repo_name = repo_root.name
-
-    files, _ignore_root = await asyncio.to_thread(
-        discover_files_to_index, path, cvizignore_path, supported_extensions=set(parsers.keys())
-    )
-    main_root = path.resolve() if path.is_dir() else None
-    # file -> (repository root, is_dependency) for the files of the companions.
-    companion_of: Dict[Path, Tuple[Path, bool]] = {}
-    for companion in companion_roots:
-        companion = Path(companion).resolve()
-        if not companion.is_dir() or companion == main_root:
-            continue
-        await asyncio.to_thread(writer.add_repository_to_graph, companion, True)
-        own_ignore = companion / ".code-visualizer" / ".cvizignore"
-        extra, _ = await asyncio.to_thread(
-            discover_files_to_index, companion, str(own_ignore) if own_ignore.is_file() else None,
-            supported_extensions=set(parsers.keys()),
-        )
-        info_logger(f"Companion source {companion}: {len(extra)} files")
-        for f in extra:
-            companion_of[f] = (companion, True)
-        files = list(files) + list(extra)
-
-    if job_id:
-        job_manager.update_job(job_id, total_files=len(files))
-
-    debug_log("Starting pre-scan to build imports map...")
-    imports_map = await asyncio.to_thread(pre_scan_for_imports, files, parsers.keys(), get_parser)
-    debug_log(f"Pre-scan complete. Found {len(imports_map)} definitions.")
-
+async def _parse_and_write(
+    ctx: _IndexContext,
+    files: Sequence[Path],
+    progress: Optional[Callable[[int, int], None]] = None,
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], float]:
+    """Parse ``files`` and write their nodes: (file data, parse failures, write start)."""
+    path = ctx.path
+    is_dependency = ctx.is_dependency
+    job_id = ctx.job_id
+    job_manager = ctx.job_manager
+    writer = ctx.writer
+    repo_name = ctx.repo_name
+    companion_of = ctx.companion_of
+    imports_map = ctx.imports_map
+    parse_file = ctx.parse_file
+    add_minimal_file_node = ctx.add_minimal_file_node
+    call_resolution_diagnostics = ctx.call_resolution_diagnostics
+    semantic_search = ctx.semantic_search
+    companion_roots = ctx.companion_roots
     all_file_data: List[Dict[str, Any]] = []
     resolved_repo_path_str = path.resolve().as_posix() if path.is_dir() else path.parent.resolve().as_posix()
 
@@ -232,6 +211,8 @@ async def run_tree_sitter_index_async(
         processed_count += 1
         if job_id:
             job_manager.update_job(job_id, processed_files=processed_count)
+        if progress is not None:
+            progress(processed_count, len(files))
         
         if processed_count % 50 == 0:
             
@@ -336,6 +317,29 @@ async def run_tree_sitter_index_async(
         key=lambda data: str(data.get("path") or ""),
     )
 
+    return all_file_data, parse_failures, serialization_start
+
+
+async def _link_and_enrich(ctx: _IndexContext, all_file_data: List[Dict[str, Any]]):
+    """Inheritance, CALLS and the other cross-file links of ``all_file_data``.
+
+    Every write here is a MERGE, so running it again over a superset of
+    files (the deferred stage) only adds the links that were missing.
+    """
+    path = ctx.path
+    is_dependency = ctx.is_dependency
+    job_id = ctx.job_id
+    job_manager = ctx.job_manager
+    writer = ctx.writer
+    repo_name = ctx.repo_name
+    companion_of = ctx.companion_of
+    imports_map = ctx.imports_map
+    parse_file = ctx.parse_file
+    add_minimal_file_node = ctx.add_minimal_file_node
+    call_resolution_diagnostics = ctx.call_resolution_diagnostics
+    semantic_search = ctx.semantic_search
+    companion_roots = ctx.companion_roots
+    resolved_repo_path_str = path.resolve().as_posix() if path.is_dir() else path.parent.resolve().as_posix()
     info_logger(
         f"File processing complete. {len(all_file_data)} files parsed. "
         f"Starting post-processing phase (inheritance + function calls)..."
@@ -480,6 +484,24 @@ async def run_tree_sitter_index_async(
         except Exception as _me:
             info_logger(f"[MYBATIS] Mapper parsing failed (skipping): {_me}")
 
+    return resolved_calls
+
+
+async def _vectorize_and_reresolve(ctx: _IndexContext) -> Optional[str]:
+    """Embeddings, search vectors, inheritance re-resolution: the closing phases."""
+    path = ctx.path
+    is_dependency = ctx.is_dependency
+    job_id = ctx.job_id
+    job_manager = ctx.job_manager
+    writer = ctx.writer
+    repo_name = ctx.repo_name
+    companion_of = ctx.companion_of
+    imports_map = ctx.imports_map
+    parse_file = ctx.parse_file
+    add_minimal_file_node = ctx.add_minimal_file_node
+    call_resolution_diagnostics = ctx.call_resolution_diagnostics
+    semantic_search = ctx.semantic_search
+    companion_roots = ctx.companion_roots
     # ── Phase 4: embedding generation (optional, config-gated) ────────────────
     from ...cli.config_manager import get_config_value as _gcv
     embed_warning: Optional[str] = None
@@ -555,12 +577,122 @@ async def run_tree_sitter_index_async(
         except Exception as _ie:
             info_logger(f"[INHERIT-RESOLVE] Post-resolution failed (skipping): {_ie}")
 
+    return embed_warning
+
+
+async def run_tree_sitter_index_async(
+    path: Path,
+    is_dependency: bool,
+    job_id: Optional[str],
+    cvizignore_path: Optional[str],
+    writer: GraphWriter,
+    job_manager: JobManager,
+    parsers: Dict[str, str],
+    get_parser: Callable[[str], Any],
+    parse_file: Callable[[Path, Path, bool], Dict[str, Any]],
+    add_minimal_file_node: Callable[[Path, Path, bool], None],
+    call_resolution_diagnostics: Optional[List[Dict[str, Any]]] = None,
+    index_summary: Optional[Dict[str, Any]] = None,
+    semantic_search: Optional[bool] = None,
+    companion_roots: Sequence[Path] = (),
+    first_pass_files: Optional[int] = None,
+    deferred_out: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Parse all discovered files, write symbols, then inheritance + CALLS.
+
+    ``first_pass_files`` with ``deferred_out`` makes the index staged: only
+    that many files, the highest in priority, are indexed now, and
+    ``deferred_out`` receives what run_deferred_index_async needs to index
+    the rest later (left empty when nothing is deferred).
+
+    ``semantic_search`` vectorizes the artifacts at the end: None follows
+    SEMANTIC_SEARCH, False leaves it to ``cviz graph`` / ``cviz embed``.
+
+    ``companion_roots`` are other repositories or folders indexed in the same
+    pass (see core.companions): each file is written under its own
+    repository, and calls and inheritance are resolved across all of them.
+    """
+    if job_id:
+        job_manager.update_job(job_id, status=JobStatus.RUNNING)
+
+    repo_root = path if path.is_dir() else path.parent.resolve()
+    await asyncio.to_thread(writer.add_repository_to_graph, repo_root, is_dependency)
+    repo_name = repo_root.name
+
+    files, _ignore_root = await asyncio.to_thread(
+        discover_files_to_index, path, cvizignore_path, supported_extensions=set(parsers.keys())
+    )
+    main_root = path.resolve() if path.is_dir() else None
+    # file -> (repository root, is_dependency) for the files of the companions.
+    companion_of: Dict[Path, Tuple[Path, bool]] = {}
+    for companion in companion_roots:
+        companion = Path(companion).resolve()
+        if not companion.is_dir() or companion == main_root:
+            continue
+        await asyncio.to_thread(writer.add_repository_to_graph, companion, True)
+        own_ignore = companion / ".code-visualizer" / ".cvizignore"
+        extra, _ = await asyncio.to_thread(
+            discover_files_to_index, companion, str(own_ignore) if own_ignore.is_file() else None,
+            supported_extensions=set(parsers.keys()),
+        )
+        info_logger(f"Companion source {companion}: {len(extra)} files")
+        for f in extra:
+            companion_of[f] = (companion, True)
+        files = list(files) + list(extra)
+
+    if job_id:
+        job_manager.update_job(job_id, total_files=len(files))
+
+    debug_log("Starting pre-scan to build imports map...")
+    imports_map = await asyncio.to_thread(pre_scan_for_imports, files, parsers.keys(), get_parser)
+    debug_log(f"Pre-scan complete. Found {len(imports_map)} definitions.")
+
+    ctx = _IndexContext(
+        path=path, is_dependency=is_dependency, job_id=job_id, job_manager=job_manager,
+        writer=writer, repo_name=repo_name, companion_of=companion_of, imports_map=imports_map,
+        parse_file=parse_file, add_minimal_file_node=add_minimal_file_node,
+        call_resolution_diagnostics=call_resolution_diagnostics,
+        semantic_search=semantic_search, companion_roots=companion_roots,
+    )
+
+    # Staged index: the files beyond the first ``first_pass_files`` (in
+    # priority order, see prioritize_files) are left to
+    # run_deferred_index_async. Every file was pre-scanned above, so the
+    # first stage already resolves its calls against the whole repository;
+    # the links into deferred files are written by the second stage.
+    files_now: List[Path] = list(files)
+    if first_pass_files and deferred_out is not None and len(files) > first_pass_files:
+        ordered = prioritize_files(files, repo_root)
+        files_now, files_later = ordered[:first_pass_files], ordered[first_pass_files:]
+        info_logger(
+            f"[STAGED] Indexing {len(files_now)} of {len(files)} files now; "
+            f"{len(files_later)} deeper or test files are deferred."
+        )
+        if job_id:
+            job_manager.update_job(job_id, total_files=len(files_now))
+    else:
+        files_later = []
+
+    all_file_data, parse_failures, serialization_start = await _parse_and_write(ctx, files_now)
+    resolved_calls = await _link_and_enrich(ctx, all_file_data)
+
+    if files_later:
+        embed_warning = None  # vectors wait for the deferred stage
+        deferred_out.clear()
+        deferred_out.update(
+            ctx=dataclasses.replace(ctx, job_id=None),
+            files=files_later,
+            file_data=all_file_data,
+        )
+    else:
+        embed_warning = await _vectorize_and_reresolve(ctx)
+
     if index_summary is not None:
         index_summary.clear()
         index_summary.update(
             await asyncio.to_thread(
                 build_index_summary,
-                files,
+                files_now,
                 parsers,
                 all_file_data,
                 resolved_calls,
@@ -570,6 +702,42 @@ async def run_tree_sitter_index_async(
         )
         if embed_warning:
             index_summary.setdefault("warnings", []).append(embed_warning)
+        if files_later:
+            index_summary["deferred_files"] = len(files_later)
 
     if job_id:
         job_manager.update_job(job_id, status=JobStatus.COMPLETED, end_time=datetime.now())
+
+
+async def run_deferred_index_async(
+    deferred: Dict[str, Any],
+    progress: Optional[Callable[[int, int], None]] = None,
+) -> Dict[str, Any]:
+    """Second stage of a staged index (see run_tree_sitter_index_async).
+
+    Parses and writes the deferred files, then resolves the links of the
+    whole repository again (first-stage files included: their calls into
+    deferred files could not be written before those existed) and runs the
+    closing phases (vectors, re-resolution). Returns counts for the log.
+    """
+    ctx: _IndexContext = deferred["ctx"]
+    files: List[Path] = list(deferred["files"])
+    new_data, parse_failures, _ = await _parse_and_write(ctx, files, progress=progress)
+    all_file_data = sorted(
+        list(deferred["file_data"]) + new_data, key=lambda data: str(data.get("path") or "")
+    )
+    # The first stage resolved its links without the deferred files: a call
+    # or a base class defined in one of them went to an external type, or
+    # nowhere. MERGE only adds, so those links are removed (as the watcher
+    # does before re-linking) and resolved again over the whole repository.
+    first_paths = sorted(
+        {Path(d["path"]).resolve().as_posix() for d in deferred["file_data"] if d.get("path")}
+    )
+    if first_paths:
+        await asyncio.to_thread(ctx.writer.delete_outgoing_calls_from_files, first_paths)
+        await asyncio.to_thread(ctx.writer.delete_inherits_for_files, first_paths)
+    await _link_and_enrich(ctx, all_file_data)
+    if first_paths:
+        await asyncio.to_thread(ctx.writer.delete_orphan_external_classes)
+    await _vectorize_and_reresolve(ctx)
+    return {"files": len(files), "failed": len(parse_failures)}

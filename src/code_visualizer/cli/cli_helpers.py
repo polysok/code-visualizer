@@ -38,6 +38,7 @@ from .config_manager import (
     ensure_first_run_bootstrap,
     NotInAProjectError,
     is_db_deletion_allowed,
+    get_config_value,
 )
 
 console = Console()
@@ -739,9 +740,11 @@ def graph_helper(
     url = graph_start_url(base_url, target, changes)
 
     watcher = None
+    deferred: dict = {}
     if watch_path:
         watcher = _start_graph_watcher(
-            watch_path, graph_builder, code_finder, ctx, use_polling, full_resync_hours
+            watch_path, graph_builder, code_finder, ctx, use_polling, full_resync_hours,
+            deferred_out=deferred,
         )
     from ..viz.graph_api import set_index_services
 
@@ -750,7 +753,18 @@ def graph_helper(
     # in the background; open pages show the progress on the live badge.
     from ..viz.ai_api import catch_up_vectorization
 
-    catch_up_vectorization()
+    if deferred:
+        # Staged first index: the rest of the repository is indexed in the
+        # background, then vectorized.
+        from ..core.staged_index import start_deferred_index
+
+        console.print(
+            f"[yellow]{len(deferred['files'])} more files (deeper folders, tests) are indexed "
+            "in the background; the page shows the progress.[/yellow]"
+        )
+        start_deferred_index(deferred, watcher, watch_path, on_done=catch_up_vectorization)
+    else:
+        catch_up_vectorization()
 
     console.print(f"[green]Dependency graph server on {base_url}/graph[/green]")
     if host not in ("127.0.0.1", "localhost", "::1"):
@@ -785,8 +799,22 @@ def graph_helper(
         db_manager.close_driver()
 
 
-def _start_graph_watcher(watch_path, graph_builder, code_finder, ctx, use_polling, full_resync_hours):
-    """Index if needed, then watch *watch_path* with start-up resynchronisation."""
+def _graph_first_pass_files() -> Optional[int]:
+    """GRAPH_FIRST_PASS_FILES as a file count, or None for all at once."""
+    raw = str(get_config_value("GRAPH_FIRST_PASS_FILES") or "").strip().lower()
+    try:
+        count = int(raw)
+    except ValueError:
+        return None  # "unlimited", empty or invalid
+    return count if count > 0 else None
+
+
+def _start_graph_watcher(watch_path, graph_builder, code_finder, ctx, use_polling, full_resync_hours,
+                         deferred_out: Optional[dict] = None):
+    """Index if needed, then watch *watch_path* with start-up resynchronisation.
+
+    A first index is staged (GRAPH_FIRST_PASS_FILES): *deferred_out* then
+    receives the files left for start_deferred_index."""
     from ..core.watcher import CodeWatcher
 
     path_obj = Path(watch_path).resolve()
@@ -800,7 +828,9 @@ def _start_graph_watcher(watch_path, graph_builder, code_finder, ctx, use_pollin
         graph_builder.semantic_search = False
         try:
             asyncio.run(graph_builder.build_graph_from_path_async(
-                path_obj, is_dependency=False, cvizignore_path=ctx.cvizignore_path))
+                path_obj, is_dependency=False, cvizignore_path=ctx.cvizignore_path,
+                first_pass_files=_graph_first_pass_files() if deferred_out is not None else None,
+                deferred_out=deferred_out))
         finally:
             graph_builder.semantic_search = None
     watcher = CodeWatcher(graph_builder, JobManager(), use_polling=use_polling)

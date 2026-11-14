@@ -2801,6 +2801,24 @@ DETACH DELETE r, n
         cnt = result["cnt"] if result else 0
         info_logger(f"[RELINK] Deleted {cnt} outgoing CALLS from {len(file_paths)} caller files")
 
+    def delete_orphan_external_classes(self) -> None:
+        """Remove the ExternalClass nodes no edge points to any more.
+
+        They exist only as the far end of CALLS / INHERITS edges; once a
+        re-link sends those edges to a project type, the node is left over.
+        """
+        backend = get_backend_type(self.driver, self._db_manager)
+
+        def _work(session):
+            result = session.run(
+                "MATCH (e:ExternalClass) WHERE NOT (e)--() DELETE e RETURN count(e) AS cnt"
+            ).single()
+            return result["cnt"] if result else 0
+
+        cnt = execute_write_operation(self.driver, backend, _work)
+        if cnt:
+            info_logger(f"[RELINK] Deleted {cnt} ExternalClass node(s) left without edges")
+
     def delete_inherits_for_files(self, file_paths: List[str]) -> None:
         backend = get_backend_type(self.driver, self._db_manager)
         def _work(session):
