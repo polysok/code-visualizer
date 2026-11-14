@@ -245,7 +245,10 @@
     $("about").showModal();
     document.body.classList.add("dialog-open");
   });
-  $("about").addEventListener("close", () => document.body.classList.remove("dialog-open"));
+  $("about").addEventListener("close", () => {
+    document.body.classList.remove("dialog-open");
+    $("about-btn").blur();  // the focus given back to the logo would stay drawn on it
+  });
   $("about-close").addEventListener("click", () => $("about").close());
   $("about").addEventListener("click", (e) => {
     const link = e.target.closest("a[href]");

@@ -49,6 +49,11 @@ body { display: flex; flex-direction: column; background: var(--bg); color: var(
 .settings-btn:hover:not(:disabled) { color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
 .settings-btn:disabled { opacity: .35; cursor: default; }
 @keyframes pulse { 50% { opacity: .35; } }
+/* No native focus ring (WebKit draws a large one in the system accent colour,
+   e.g. on the logo when the About window gives the focus back): a thin
+   outline, for the keyboard only. */
+#tabbar button:focus { outline: none; }
+#tabbar button:focus-visible { outline: 2px solid color-mix(in srgb, var(--accent) 60%, transparent); outline-offset: -2px; }
 
 #views { flex: 1; position: relative; min-height: 0; }
 .view { position: absolute; inset: 0; display: none; }
