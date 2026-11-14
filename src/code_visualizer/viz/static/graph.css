@@ -363,7 +363,10 @@ dialog { max-height: calc(100vh - 48px); overflow: auto; }
 .ai-block legend { padding: 0 4px; font-weight: 600; }
 .row-inline { display: flex; gap: 6px; align-items: center; }
 .row-inline input { flex: 1; min-width: 0; }
-dialog .ai-block label.chk { flex-direction: row; color: var(--text); }
+dialog .ai-block label.chk { flex-direction: row; align-items: flex-start; gap: 6px; color: var(--text); }
+dialog .ai-block label.chk input { margin-top: 3px; flex: none; }
+.ai-status #ai-embed-state { flex: 1; min-width: 0; }
+.ai-status .btn { flex: none; }
 .ai-status { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-top: 4px; color: var(--muted); font-size: 12px; }
 #ai-embed-progress { width: 100%; height: 6px; margin-top: 8px; accent-color: var(--accent); }
 
