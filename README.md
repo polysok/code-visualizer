@@ -33,6 +33,9 @@ from any node of the graph, jump back to its code in the IDE.
   renamed and deleted artifacts).
 - Search by meaning in a chat box (see below), with the local embedding
   model included: nothing to install, nothing leaves the machine.
+- *Open in Dependency Graph* in the IDE brings the app forward on the
+  repository's tab, centred on the artifact under the cursor; a node's
+  *Open in IDE* goes back to the code.
 - A repository already served from a terminal or an IDE (`cviz graph`) is
   reused rather than opened twice.
 
@@ -54,7 +57,10 @@ they need the command line below.
 ## Under the hood
 
 - **IDE links**: `cviz-open FILE:LINE` / `cviz open` open an artifact in the
-  graph; nodes open the code in VS Code, Cursor, Rider, IntelliJ or Zed.
+  desktop app when it runs (it records a loopback URL and a token in
+  `~/.code-visualizer/desktop.json`), else in an open graph page, else in a
+  new browser tab; nodes open the code in VS Code, Cursor, Rider, IntelliJ or
+  Zed.
 - **Live updates**: the watcher pushes changes to open pages over SSE, catches
   up on start-up with files changed while it was not running, re-links calls
   to symbols defined after their callers, and re-links callers after a rename.
