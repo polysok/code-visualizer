@@ -10,20 +10,49 @@
 > **not** affiliated with or endorsed by CodeGraphContext, and keeps no
 > compatibility with it: report every issue here.
 
-## What this fork adds
+## What it is
 
-The goal is to navigate an application's dependency graph from a web page
-linked to the IDE in both directions: open the artifact under the cursor from
-VS Code, Rider or Zed, and jump back to the code from any node of the graph.
+**Code Visualizer is a desktop app** (macOS, Windows, Linux) that shows the
+dependency graph of your repositories: callers, callees and inheritance of a
+function, class or file, one tab per repository. It embeds everything it
+needs: open a repository folder and it is indexed, then kept up to date as
+you edit.
 
-- **Dependency-graph page** (`cviz graph [--watch <repo>]`, served at
-  `/graph`): callers, callees and inheritance of a function, class or file,
-  depth 1–5. A click adds a node's neighbours to the current graph; a double
-  click recentres on it; nodes open the code in the IDE (VS Code, Cursor,
-  Rider, IntelliJ, Zed). Heuristic edges can be hidden.
-- **IDE integrations**: `cviz-open FILE:LINE` / `cviz open`, the VS Code command
-  *CViz: Open in Dependency Graph* (`Cmd/Ctrl+Alt+G`), a Rider External Tool
-  (`extensions/rider/`) and a Zed task (`extensions/zed/`).
+**IDE extensions complete it**, linking the graph to the code in both
+directions: from the editor, open the artifact under the cursor in the graph;
+from any node of the graph, jump back to its code in the IDE.
+
+### The desktop app
+
+- **+** (or ⌘O / Ctrl+O) opens a repository in a new tab; the first time,
+  it is indexed, with its progress shown. The tabs come back at the next
+  start.
+- The graph: depth 1–5, a click adds a node's neighbours, a double click
+  recentres on it, heuristic edges can be hidden; the **Changes** view
+  compares the current state with a target branch (added, modified, moved,
+  renamed and deleted artifacts).
+- Search by meaning in a chat box (see below), with the local embedding
+  model included: nothing to install, nothing leaves the machine.
+- A repository already served from a terminal or an IDE (`cviz graph`) is
+  reused rather than opened twice.
+
+### The IDE extensions
+
+| IDE | Extension | Open in the graph |
+| --- | --- | --- |
+| VS Code, Cursor | `code-visualizer-vscode-X.Y.Z.vsix` (release files) | *CViz: Open in Dependency Graph*, `Cmd/Ctrl+Alt+G` |
+| Rider, IntelliJ and the other JetBrains IDEs | External Tool, installed by `cviz ide jetbrains` (`extensions/rider/`) | *Tools › CViz › Open in Dependency Graph* |
+| Zed | Task, installed by `cviz ide zed <repo>` (`extensions/zed/`) | *CViz: open in dependency graph* |
+
+The extensions find the graph server of the repository, the one started by
+the app included, and open the graph page on the artifact under the cursor
+(in the browser for now). The JetBrains and Zed ones run `cviz-open`: they
+need the command line below.
+
+## Under the hood
+
+- **IDE links**: `cviz-open FILE:LINE` / `cviz open` open an artifact in the
+  graph; nodes open the code in VS Code, Cursor, Rider, IntelliJ or Zed.
 - **Live updates**: the watcher pushes changes to open pages over SSE, catches
   up on start-up with files changed while it was not running, re-links calls
   to symbols defined after their callers, and re-links callers after a rename.
@@ -49,21 +78,28 @@ VS Code, Rider or Zed, and jump back to the code from any node of the graph.
 - **HTTP API** for the page: `/api/locate`, `/api/neighborhood`,
   `/api/events`, `/api/focus`, `/api/open`, `/api/search`, `/api/chat`.
 
-### Install this fork
+## Install
 
-The fork is distributed as `code-visualizer` (not on PyPI): import package
-`code_visualizer`, commands `cviz` and `cviz-open`. Each
-[release](https://github.com/polysok/code-visualizer/releases) has:
+Each [release](https://github.com/polysok/code-visualizer/releases) has:
 
 | File | What it is |
 | --- | --- |
+| `Code.Visualizer_X.Y.Z_aarch64.dmg`, `Code.Visualizer_X.Y.Z_x64-setup.exe`, `.deb`, `.AppImage` | The desktop app (below) |
 | `install.sh`, `install.ps1` | One-line installers (below) |
 | `code_visualizer-X.Y.Z-py3-none-any.whl` | The engine, for `uv tool install` (what the installers use) |
 | `cviz-macos-arm64`, `cviz-linux-x86_64`, `cviz-windows.exe` | The engine as a single command-line program, no Python needed (run it from a terminal, it is not an app) |
-| `code-visualizer-vscode-X.Y.Z.vsix` | The VS Code / Cursor extension |
-| `Code.Visualizer_X.Y.Z_aarch64.dmg`, `Code.Visualizer_X.Y.Z_x64-setup.exe`, `.deb`, `.AppImage` | The desktop app: one tab per repository, nothing else to install (not signed: macOS asks once to allow it in *System Settings › Privacy & Security*, Windows shows a SmartScreen warning: *More info › Run anyway*) |
+| `code-visualizer-vscode-X.Y.Z.vsix` | The VS Code / Cursor extension (*Extensions › … › Install from VSIX*) |
 
-From the folder of the repository to look at:
+**The app**: download the `.dmg` (macOS), the `-setup.exe` (Windows) or
+the `.deb` / `.AppImage` (Linux) and install it; then the extension of your
+IDE. The builds are not signed: macOS asks once to allow the app (*System
+Settings › Privacy & Security › Open Anyway*), Windows shows a SmartScreen
+warning (*More info › Run anyway*).
+
+**The command line** (`cviz`, `cviz-open`; package `code-visualizer`, not
+on PyPI), for the JetBrains and Zed
+extensions, a terminal or a remote machine; from the folder of the
+repository to look at:
 
 ```bash
 # macOS, Linux
