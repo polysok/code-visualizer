@@ -46,6 +46,7 @@ def test_full_key_match_becomes_uid_lookup(driver):
     assert "{uid: row.cviz_uid_fn}" in translated
     assert "{uid: row.cviz_uid_p}" in translated
     assert "line_number: row.line_number" not in translated
+    assert translated.count("MATCH") == 2, translated   # key lookups only: left chained (1.5e)
     row = params["batch"][0]
     assert row["cviz_uid_fn"] == "f/r/a.py100"     # name + path + line + occurrence, as 1.5b builds it
     assert row["cviz_uid_p"] == "a/r/a.py10"
