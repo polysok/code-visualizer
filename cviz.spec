@@ -170,6 +170,26 @@ try:
 except Exception as e:
     print(f"WARNING: collect_all failed for ladybug: {e}")
 
+# Local embedding model (search by meaning, the `semantic` extra): fastembed
+# and its ONNX runtime, when the build environment has them (the release
+# workflow and desktop/build.sh install the extra). Without it the binary
+# still searches through an OpenAI-compatible embedding server.
+try:
+    import fastembed  # noqa: F401
+    HAS_FASTEMBED = True
+except ImportError:
+    HAS_FASTEMBED = False
+    print("NOTE: fastembed is not installed: the binary has no local embedding model")
+if HAS_FASTEMBED:
+    for pkg in ('fastembed', 'onnxruntime', 'tokenizers', 'py_rust_stemmers'):
+        try:
+            p_datas, p_binaries, p_hiddenimports = collect_all(pkg)
+            datas += p_datas
+            binaries += p_binaries
+            hidden_imports += p_hiddenimports
+        except Exception as e:
+            print(f"WARNING: collect_all failed for {pkg}: {e}")
+
 # stdlibs: dynamically imports py3.py, py312.py, etc. via importlib
 stdlibs_dir = find_pkg_dir('stdlibs')
 if stdlibs_dir:
@@ -212,7 +232,7 @@ hidden_imports += [
     'code_visualizer.tools.languages.rust_types',
     'code_visualizer.tools.languages.member_types',
     'code_visualizer.utils.package_info',
-    # Natural-language search (the binary ships no fastembed: it uses an
+    # Natural-language search (fastembed, see above, or an
     # OpenAI-compatible embedding server).
     'code_visualizer.semantic',
     'code_visualizer.semantic.settings',
@@ -242,11 +262,13 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
+    # fastembed needs numpy, and PIL for its image models (imported by its
+    # package even for text).
     excludes=[
-        'tkinter', '_tkinter', 'matplotlib', 'numpy', 'pandas', 'scipy',
-        'PIL', 'cv2', 'torch', 'tensorflow', 'jupyter', 'notebook', 'IPython',
+        'tkinter', '_tkinter', 'matplotlib', 'pandas', 'scipy',
+        'cv2', 'torch', 'tensorflow', 'jupyter', 'notebook', 'IPython',
         'pydoc', 'doctest', 'xmlrpc', 'lib2to3', 'test', 'unittest.mock',
-    ],
+    ] + ([] if HAS_FASTEMBED else ['numpy', 'PIL']),
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
     cipher=block_cipher,

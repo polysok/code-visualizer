@@ -39,10 +39,13 @@ SIDECAR="$TAURI/binaries/cviz-$TRIPLE$EXE"
 cd "$ROOT"
 if [ "$APP_ONLY" = 0 ] || [ ! -f "$SIDECAR" ]; then
     step "1/3 cviz binary (PyInstaller, a few minutes)"
-    uv run python -c "import PyInstaller" 2>/dev/null || uv pip install --quiet pyinstaller
-    # Errors only: PyInstaller warns about optional modules and Windows DLLs
-    # it does not find on this system; the release workflow shows them all.
-    uv run pyinstaller cviz.spec --clean --noconfirm --log-level ERROR
+    # With fastembed (the semantic extra), in a layer over the project
+    # environment: the binary carries the local embedding model runtime, so
+    # the search by meaning needs no install. Errors only: PyInstaller warns
+    # about optional modules and Windows DLLs it does not find on this
+    # system; the release workflow shows them all.
+    uv run --with pyinstaller --with "fastembed>=0.5" \
+        pyinstaller cviz.spec --clean --noconfirm --log-level ERROR
     mkdir -p "$TAURI/binaries"
     cp "dist/cviz$EXE" "$SIDECAR"
     chmod +x "$SIDECAR"
