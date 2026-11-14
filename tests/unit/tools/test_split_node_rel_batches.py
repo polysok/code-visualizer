@@ -1,8 +1,8 @@
 """Parameter / HAS_PARAMETER, Module / IMPORTS and ExternalClass / INHERITS are written as a node-only UNWIND followed
-by a relationship-only UNWIND on Kuzu, so its forced per-row fallback (Kuzu #1605) never fires.
-Ladybug retains the established combined/per-row path until its split batches preserve exact parity. The graph must be what the combined per-row query wrote: nodes only where
-the old MATCH succeeded, first non-null Module metadata, the last row's values for a repeated IMPORTS key, and the
-label-less external fan-out over every populated child label.
+by a relationship-only UNWIND, so the embedded wrapper's forced per-row fallback (Kuzu #1605) never fires: it ran one
+translated, prepared query per row, the bulk of a full index. The graph must be what the combined per-row query wrote:
+nodes only where the old MATCH succeeded, first non-null Module metadata, the last row's values for a repeated IMPORTS
+key, and the label-less external fan-out over every populated child label.
 """
 import os
 import re
@@ -70,7 +70,7 @@ def test_parameters_follow_occurrence_identity(env):
                                                          "RETURN f.occurrence_index AS o, p.name AS p, p.function_line_number AS l"))
     assert edges == [(0, "a", 10), (0, "a", 20), (0, "b", 10), (1, "a", 10), (1, "c", 10)]
     assert len(_q(driver, "MATCH (p:Parameter) RETURN p.uid")) == 4        # (a,10) shared by both occurrences
-    assert bool(forced) == (backend == "ladybugdb")
+    assert not forced, forced
 
 
 def test_imports_metadata_and_repeated_keys(env):
@@ -84,7 +84,7 @@ def test_imports_metadata_and_repeated_keys(env):
     bar = _q(driver, "MATCH (:File)-[r:IMPORTS {line_number: 2, imported_name: 'Bar'}]->(:Module) RETURN r.alias AS a, r.full_import_name AS f")
     assert bar == [{"a": "B2", "f": "use M1::Bar;"}]                      # last sorted row, as row-by-row SETs leave it
     assert len(_q(driver, "MATCH (:File)-[r:IMPORTS]->(:Module) RETURN r.line_number")) == 6
-    assert bool(forced) == (backend == "ladybugdb")
+    assert not forced, forced
 
 
 def test_external_parents_only_for_existing_children(env):
@@ -104,4 +104,70 @@ def test_external_parents_only_for_existing_children(env):
                                                                   "RETURN label(c) AS lab, c.name AS c, p.name AS p, r.confidence_label AS k"))
     assert rels == [("Class", "K", "Base", "INFERRED"), ("Class", "Status", "Legacy", "INFERRED"),
                     ("Variable", "Status", "Legacy", "INFERRED")]
-    assert bool(forced) == (backend == "ladybugdb")
+    assert not forced, forced
+
+
+def test_js_imports_last_row_per_edge_key(env):
+    writer, driver, forced, backend = env
+    js = f"{REPO}/src/app.ts"
+    writer.add_file_to_graph({"path": js, "repo_path": REPO, "lang": "typescript", "imports": [
+        {"source": "./util", "name": "a", "alias": "x1", "line_number": 1},
+        {"source": "./util", "name": "b", "alias": "x2", "line_number": 1},   # same edge key: the last row wins
+        {"source": "./util", "name": "c", "line_number": 2},
+        {"source": "react", "name": "*", "line_number": 3}]}, "fx", {})
+    assert sorted(r["n"] for r in _q(driver, "MATCH (m:Module) RETURN m.name AS n")) == ["./util", "react"]
+    edges = sorted((r["m"], r["l"], r["i"], r["a"]) for r in _q(driver, "MATCH (:File)-[r:IMPORTS]->(m:Module) "
+                                                               "RETURN m.name AS m, r.line_number AS l, r.imported_name AS i, r.alias AS a"))
+    assert edges == [("./util", 1, "b", "x2"), ("./util", 2, "c", ""), ("react", 3, "*", "")]
+    assert not forced, forced
+
+
+def test_module_inclusions_only_for_existing_classes(env):
+    writer, driver, forced, backend = env
+    rb = f"{REPO}/lib/k.rb"
+    writer.add_file_to_graph({"path": rb, "repo_path": REPO, "lang": "ruby",
+                              "classes": [{"name": "K", "line_number": 1, "end_line": 9, "lang": "ruby"}],
+                              "module_inclusions": [{"class": "K", "module": "Comparable"},
+                                                    {"class": "K", "module": "Comparable"},
+                                                    {"class": "K", "module": "Enumerable"},
+                                                    {"class": "Ghost", "module": "Nowhere"}]}, "fx", {})
+    assert sorted(r["n"] for r in _q(driver, "MATCH (m:Module) RETURN m.name AS n")) == ["Comparable", "Enumerable"]
+    rels = sorted((r["c"], r["m"]) for r in _q(driver, "MATCH (c:Class)-[:INCLUDES]->(m:Module) RETURN c.name AS c, m.name AS m"))
+    assert rels == [("K", "Comparable"), ("K", "Enumerable")]
+    assert not forced, forced
+
+
+def test_external_calls_split_and_only_for_existing_callers(env):
+    writer, driver, forced, backend = env
+    writer.add_file_to_graph({"path": A, "repo_path": REPO, "lang": "rust",
+                              "functions": [_fn("run", 10, [])]}, "fx", {})
+    base = {"caller_file_path": A, "caller_line_number": 10, "full_call_name": "Lock", "args": []}
+    rows = [
+        {**base, "caller_name": "run", "external_type": "Mutex", "called_name": "lock", "line_number": 11, "confidence": 0.9},
+        {**base, "caller_name": "run", "external_type": "Mutex", "called_name": "lock", "line_number": 12},
+        {**base, "caller_name": "run", "external_type": "Arc", "called_name": "new", "line_number": 13},
+        {**base, "caller_name": "ghost", "external_type": "Nowhere", "called_name": "x", "line_number": 14},
+    ]
+    with driver.session() as session:
+        GraphWriter._write_external_calls(session, rows, "Function", 100)
+    assert sorted(r["n"] for r in _q(driver, "MATCH (e:ExternalClass) RETURN e.name AS n")) == ["Arc", "Mutex"]
+    calls = sorted((r["e"], r["l"], r["c"]) for r in _q(driver, "MATCH (:Function {name: 'run'})-[r:CALLS]->(e:ExternalClass) "
+                                                         "RETURN e.name AS e, r.line_number AS l, r.called_name AS c"))
+    assert calls == [("Arc", 13, "new"), ("Mutex", 11, "lock"), ("Mutex", 12, "lock")]
+    assert not forced, forced
+
+
+def test_row_folding_helpers():
+    from code_visualizer.tools.indexing.persistence.writer import (
+        _first_row_per_key, _last_row_per_key, _module_metadata_rows,
+    )
+    rows = [{"k": 1, "v": "a"}, {"k": 2, "v": "b"}, {"k": 1, "v": "c"}]
+    assert _first_row_per_key(rows, lambda r: r["k"]) == [{"k": 1, "v": "a"}, {"k": 2, "v": "b"}]
+    assert _last_row_per_key(rows, lambda r: r["k"]) == [{"k": 2, "v": "b"}, {"k": 1, "v": "c"}]
+    imports = [{"name": "M", "lang": None, "full_import_name": "use M::a;"},
+               {"name": "N", "lang": "rust", "full_import_name": "use N;"},
+               {"name": "M", "lang": "rust", "full_import_name": "use M::b;"}]
+    assert _module_metadata_rows(imports) == [
+        {"name": "M", "lang": "rust", "full_import_name": "use M::a;"},
+        {"name": "N", "lang": "rust", "full_import_name": "use N;"},
+    ]
