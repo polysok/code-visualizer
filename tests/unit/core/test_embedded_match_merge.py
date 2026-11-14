@@ -1,15 +1,18 @@
 """#1710: consecutive MATCH clauses inside UNWIND batches merge to comma-form.
 
-LadybugDB's planner silently yields ZERO rows for
-`UNWIND $b AS row MATCH (a:File {path: row.p}) MATCH (b:Function {…})` when
-the first MATCH is an index-map lookup: each MATCH works alone, chained they
-produce nothing, no error is raised — so downstream MERGEs quietly write no
-edges. That was the parity gap's exact signature (every File-sourced CALLS
-edge and five Struct CONTAINS edges missing on ladybug only, run after run).
+LadybugDB's planner silently mis-binds
+`UNWIND $b AS row MATCH (a:File {path: row.p}) MATCH (b:Function {…})`: after
+a primary-key lookup, the next MATCH's predicates on row fields are lost, so
+a row binds the nodes of other rows (or none), no error is raised, and the
+MERGEs downstream write wrong or missing edges (every File-sourced CALLS edge
+and five Struct CONTAINS edges missing on ladybug only, run after run).
 
 The comma form `MATCH (a {…}), (b {…})` is semantically identical for
 non-optional patterns and both engines plan it correctly, so the embedded
-translation layer now rewrites adjacent MATCH clauses in UNWIND queries.
+translation layer rewrites adjacent MATCH clauses in UNWIND queries. A chain
+of primary-key lookups only binds correctly chained, and the comma form makes
+it a join whose cost grows with the tables, so such a chain stays chained
+(CVIZ_LADYBUG_COMMA_MATCH=true joins it too, as before).
 """
 from pathlib import Path
 
@@ -198,3 +201,54 @@ def test_merged_form_still_binds_rows_on_kuzu(driver):
             ).data()
         )
     assert got == [("A", "A_ext"), ("B", "B_ext")], got
+
+
+def test_key_lookup_chain_stays_chained(driver, monkeypatch):
+    monkeypatch.delenv("CVIZ_LADYBUG_COMMA_MATCH", raising=False)
+    q = (
+        "UNWIND $batch AS row "
+        "MATCH (caller:Function {uid: row.caller_key}) "
+        "MATCH (called:File {path: row.called_path}) "
+        "MERGE (caller)-[:CALLS {line_number: row.line_number}]->(called)"
+    )
+    translated = _translate(driver, q, batch=[{"caller_key": "k", "called_path": "/f.py", "line_number": 1}])
+    assert translated.count("MATCH") == 2, translated
+
+
+def test_key_lookup_chain_is_joined_when_asked(driver, monkeypatch):
+    monkeypatch.setenv("CVIZ_LADYBUG_COMMA_MATCH", "true")
+    q = (
+        "UNWIND $batch AS row "
+        "MATCH (caller:Function {uid: row.caller_key}) "
+        "MATCH (called:File {path: row.called_path}) "
+        "RETURN count(*)"
+    )
+    translated = _translate(driver, q, batch=[{"caller_key": "k", "called_path": "/f.py"}])
+    assert translated.count("MATCH") == 1, translated
+
+
+def test_mixed_chain_is_joined_and_binds_rows(driver, monkeypatch):
+    """The #1710 shape on the real engine: a File found by its path, then a
+    Function by name and path. Chained, the row calling g also bound f."""
+    monkeypatch.delenv("CVIZ_LADYBUG_COMMA_MATCH", raising=False)
+    with driver.session() as s:
+        for path in ("/a.py", "/b.py"):
+            s.run("MERGE (f:File {path: $p}) SET f.name = $p", p=path)
+        for name, line in (("f", 3), ("g", 7)):
+            s.run("MERGE (fn:Function {name: $n, path: $p, line_number: $l, occurrence_index: $o})",
+                  n=name, p="/b.py", l=line, o=0)
+        s.run(
+            UNWIND_DOUBLE_MATCH,
+            batch=[
+                {"caller_file_path": "/a.py", "called_name": "f", "called_file_path": "/b.py",
+                 "called_line_number": 3, "line_number": 1},
+                {"caller_file_path": "/a.py", "called_name": "g", "called_file_path": "/b.py",
+                 "called_line_number": 0, "line_number": 2},
+                {"caller_file_path": "/b.py", "called_name": "f", "called_file_path": "/b.py",
+                 "called_line_number": 3, "line_number": 9},
+            ],
+        )
+        got = sorted((r["f"], r["n"], r["l"]) for r in s.run(
+            "MATCH (f:File)-[c:CALLS]->(fn:Function) RETURN f.path AS f, fn.name AS n, c.line_number AS l"
+        ).data())
+    assert got == [("/a.py", "f", 1), ("/a.py", "g", 2), ("/b.py", "f", 9)], got

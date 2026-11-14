@@ -107,6 +107,97 @@ def _coalesce_same_key_items(items: List[Dict[str, Any]]) -> List[Dict[str, Any]
     return [merged[k] for k in order]
 
 
+# Splitting node and relationship MERGEs
+# --------------------------------------
+# An UNWIND batch that MERGEs a node *and* a relationship is forced into a
+# per-row loop by the embedded wrapper (Kuzu/Ladybug mis-binds a merged node
+# whose key repeats non-adjacently, #1605): one translated, prepared query per
+# row. The writer therefore runs such writes as two batched queries, a node
+# pass (MERGE of the nodes, no relationship) then a relationship pass (MATCH
+# of both ends, MERGE of the edge), which the wrapper runs batched.
+#
+# A batched MERGE + SET does not replay row-by-row semantics when a key
+# repeats inside the batch, so the rows are folded in Python beforehand to
+# what the per-row loop left: the first non-null node metadata, the last
+# row's edge properties.
+
+
+def _first_row_per_key(
+    rows: List[Dict[str, Any]], key: Callable[[Dict[str, Any]], Any]
+) -> List[Dict[str, Any]]:
+    """One row per key, the first one, in input order."""
+    seen: Dict[Any, Dict[str, Any]] = {}
+    for row in rows:
+        seen.setdefault(key(row), row)
+    return list(seen.values())
+
+
+def _last_row_per_key(
+    rows: List[Dict[str, Any]], key: Callable[[Dict[str, Any]], Any]
+) -> List[Dict[str, Any]]:
+    """One row per key, the last one, in the order of each key's last row."""
+    folded: Dict[Any, Dict[str, Any]] = {}
+    for row in rows:
+        k = key(row)
+        if k in folded:
+            del folded[k]  # re-insert: the last row of a key wins
+        folded[k] = row
+    return list(folded.values())
+
+
+def _module_metadata_rows(import_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """One row per module with its first non-null ``lang`` and ``full_import_name``.
+
+    Row by row, ``SET m.x = coalesce(m.x, row.x)`` keeps the node's existing
+    value, else the first non-null one of the batch: folding to that value
+    and running the same SET once gives the same node.
+    """
+    folded: Dict[str, Dict[str, Any]] = {}
+    for row in import_rows:
+        meta = folded.setdefault(
+            row["name"], {"name": row["name"], "lang": None, "full_import_name": None}
+        )
+        for prop in ("lang", "full_import_name"):
+            if meta[prop] is None and row.get(prop) is not None:
+                meta[prop] = row[prop]
+    return list(folded.values())
+
+
+def _file_is_new(session: Any, file_path: str) -> bool:
+    """True only when the graph certainly holds no File node at this path."""
+    try:
+        row = session.run(
+            "MATCH (f:File {path: $path}) RETURN count(f) AS n", path=file_path
+        ).single()
+        return row is not None and row["n"] == 0
+    except Exception:  # noqa: BLE001 - unknown: take the MERGE path
+        return False
+
+
+def _create_or_merge(
+    session: Any,
+    create_query: str,
+    merge_query: str,
+    *,
+    batch: List[Dict[str, Any]],
+    create_batch: Optional[List[Dict[str, Any]]] = None,
+    **params: Any,
+) -> None:
+    """Create the nodes of a file new to the graph; merge them if one exists.
+
+    A node can outlive its File (an interrupted write, a symbol whose uid
+    collides): CREATE then fails on the duplicated primary key, writing
+    nothing (a failed statement is rolled back), and the batch is merged.
+    """
+    try:
+        session.run(create_query, batch=create_batch if create_batch is not None else batch, **params)
+    except Exception as exc:  # noqa: BLE001 - only a duplicated key falls back
+        if "duplicated primary key" not in str(exc).lower():
+            raise
+        debug_log(f"CREATE hit an existing node, merging instead: {exc}")
+        session.run(merge_query, batch=batch, **params)
+
+
 def _assign_occurrence_indices(
     items: List[Dict[str, Any]],
 ) -> Tuple[List[int], List[Tuple[str, Any, int]]]:
@@ -383,6 +474,12 @@ class GraphWriter:
             except ValueError:
                 relative_path = file_name
 
+            # A file new to the graph has no symbol nodes yet: they are created
+            # (see _create_or_merge), not merged. MERGE makes LadybugDB scan the
+            # label table for every batch, which grows with the graph; CREATE
+            # costs the same whatever its size.
+            file_is_new = _file_is_new(session, file_path_str)
+
             session.run(
                 """
                 MERGE (f:File {path: $path})
@@ -645,15 +742,21 @@ class GraphWriter:
                     merge_clause = f"MERGE (n:{label} {{{node_key}}})"
                     match_clause = f"MATCH (n:{label} {{{node_key}}})"
 
-                session.run(
-                    f"""
+                node_query = f"""
                     UNWIND $batch AS row
                     {merge_clause}
                     SET n += row
-                """,
-                    batch=batch,
-                    file_path=file_path_str,
-                )
+                """
+                if file_is_new and keyed_by_position:
+                    _create_or_merge(
+                        session,
+                        node_query.replace("MERGE (n:", "CREATE (n:", 1),
+                        node_query,
+                        batch=batch,
+                        file_path=file_path_str,
+                    )
+                else:
+                    session.run(node_query, batch=batch, file_path=file_path_str)
                 session.run(
                     f"""
                     UNWIND $batch AS row
@@ -676,12 +779,37 @@ class GraphWriter:
                     if key not in seen_params:
                         seen_params.add(key)
                         unique_params.append(p)
-                session.run(
-                    """
+                # Node pass, then relationship pass (see "Splitting node and relationship MERGEs"):
+                # one query with both MERGEs is forced into the per-row loop.
+                # Sorting keeps rows sharing a Parameter key adjacent.
+                unique_params.sort(key=lambda r: (r["arg_name"], r["line_number"]))
+                param_node_query = """
                     UNWIND $batch AS row
                     MATCH (fn:Function {name: row.func_name, path: $file_path, line_number: row.line_number, occurrence_index: row.occurrence_index})
                     MERGE (p:Parameter {name: row.arg_name, path: $file_path, function_line_number: row.line_number})
                     SET p.name = row.arg_name, p.path = $file_path, p.function_line_number = row.line_number
+                """
+                if file_is_new:
+                    # One row per Parameter: two occurrences of a function
+                    # share their (name, line) parameters, and CREATE, unlike
+                    # MERGE, would mint the node twice.
+                    _create_or_merge(
+                        session,
+                        param_node_query.replace("MERGE (p:", "CREATE (p:", 1),
+                        param_node_query,
+                        create_batch=_first_row_per_key(
+                            unique_params, lambda r: (r["arg_name"], r["line_number"])
+                        ),
+                        batch=unique_params,
+                        file_path=file_path_str,
+                    )
+                else:
+                    session.run(param_node_query, batch=unique_params, file_path=file_path_str)
+                session.run(
+                    """
+                    UNWIND $batch AS row
+                    MATCH (fn:Function {name: row.func_name, path: $file_path, line_number: row.line_number, occurrence_index: row.occurrence_index})
+                    MATCH (p:Parameter {name: row.arg_name, path: $file_path, function_line_number: row.line_number})
                     MERGE (fn)-[:HAS_PARAMETER]->(p)
                 """,
                     batch=unique_params,
@@ -789,18 +917,32 @@ class GraphWriter:
                         }
                     )
 
+            # Each import query runs as a node pass then a relationship pass
+            # (see "Splitting node and relationship MERGEs"): written as one, it was forced into the
+            # per-row loop, ~20 % of a full index on its own.
             if js_imports:
                 session.run(
                     """
                     UNWIND $batch AS row
                     MATCH (f:File {path: $file_path})
                     MERGE (m:Module {name: row.module_name})
+                """,
+                    batch=_first_row_per_key(js_imports, lambda r: r["module_name"]),
+                    file_path=file_path_str,
+                )
+                session.run(
+                    """
+                    UNWIND $batch AS row
+                    MATCH (f:File {path: $file_path})
+                    MATCH (m:Module {name: row.module_name})
                     MERGE (f)-[r:IMPORTS {line_number: row.line_number}]->(m)
                     SET r.imported_name = row.imported_name,
                         r.alias = row.alias,
                         r.lang = row.lang
                 """,
-                    batch=js_imports,
+                    batch=_last_row_per_key(
+                        js_imports, lambda r: (r["module_name"], r["line_number"])
+                    ),
                     file_path=file_path_str,
                 )
 
@@ -813,27 +955,53 @@ class GraphWriter:
                     MERGE (m:Module {name: row.name})
                     SET m.lang = coalesce(m.lang, row.lang),
                         m.full_import_name = coalesce(m.full_import_name, row.full_import_name)
+                """,
+                    batch=_module_metadata_rows(other_imports),
+                    file_path=file_path_str,
+                )
+                session.run(
+                    """
+                    UNWIND $batch AS row
+                    MATCH (f:File {path: $file_path})
+                    MATCH (m:Module {name: row.name})
                     MERGE (f)-[r:IMPORTS {line_number: row.line_number, imported_name: row.imported_name}]->(m)
                     SET r.alias = coalesce(row.alias, ""),
                         r.full_import_name = row.full_import_name,
                         r.lang = row.lang
                 """,
-                    batch=other_imports,
+                    batch=_last_row_per_key(
+                        other_imports,
+                        lambda r: (r["name"], r["line_number"], r["imported_name"]),
+                    ),
                     file_path=file_path_str,
                 )
 
             module_inclusions = file_data.get("module_inclusions", [])
             if module_inclusions:
+                inclusion_rows = sorted(
+                    {(i["class"], i["module"]) for i in module_inclusions},
+                    key=lambda pair: (pair[1], pair[0]),
+                )
+                inclusion_rows = [
+                    {"class_name": c, "module_name": m} for c, m in inclusion_rows
+                ]
                 session.run(
                     """
                     UNWIND $batch AS row
                     MATCH (c:Class {name: row.class_name, path: $file_path})
                     MERGE (m:Module {name: row.module_name})
+                """,
+                    batch=inclusion_rows,
+                    file_path=file_path_str,
+                )
+                session.run(
+                    """
+                    UNWIND $batch AS row
+                    MATCH (c:Class {name: row.class_name, path: $file_path})
+                    MATCH (m:Module {name: row.module_name})
                     MERGE (c)-[:INCLUDES]->(m)
                 """,
-                    batch=[
-                        {"class_name": i["class"], "module_name": i["module"]} for i in module_inclusions
-                    ],
+                    batch=inclusion_rows,
                     file_path=file_path_str,
                 )
 
@@ -1227,10 +1395,18 @@ class GraphWriter:
                 f"MATCH (caller:{caller_label} {{name: row.caller_name, path: row.caller_file_path, "
                 "line_number: row.caller_line_number})"
             )
-        query = f"""
+        # Node pass then relationship pass, both batched (see "Splitting node
+        # and relationship MERGEs"). The rows are already unique on the edge's
+        # key, so the SETs see one row per edge.
+        node_query = f"""
             UNWIND $batch AS row
             {caller_match}
             MERGE (ext:ExternalClass {{name: row.external_type}})
+        """
+        rel_query = f"""
+            UNWIND $batch AS row
+            {caller_match}
+            MATCH (ext:ExternalClass {{name: row.external_type}})
             MERGE (caller)-[call:CALLS {{line_number: row.line_number, full_call_name: row.full_call_name, args_key: row.args_key}}]->(ext)
             SET call.args = row.args
             SET call.called_name = row.called_name
@@ -1238,15 +1414,17 @@ class GraphWriter:
             SET call.resolution_tier = row.resolution_tier
             SET call.confidence_label = row.confidence_label
         """
+        node_rows = sorted(batch_rows, key=lambda r: r["external_type"])
         t0 = time.time()
-        for i in range(0, len(batch_rows), batch_size):
-            try:
-                session.run(query, batch=batch_rows[i : i + batch_size])
-            except Exception as e:
-                if _is_binder_exception(e):
-                    warning_logger(f"[CALLS] {caller_label}-to-ExternalClass edges not written: {e}")
-                    return
-                raise
+        for query, query_rows in ((node_query, node_rows), (rel_query, batch_rows)):
+            for i in range(0, len(query_rows), batch_size):
+                try:
+                    session.run(query, batch=query_rows[i : i + batch_size])
+                except Exception as e:
+                    if _is_binder_exception(e):
+                        warning_logger(f"[CALLS] {caller_label}-to-ExternalClass edges not written: {e}")
+                        return
+                    raise
         info_logger(
             f"[CALLS] {caller_label}-to-ExternalClass: {len(batch_rows)} edges written in {time.time()-t0:.1f}s"
         )
@@ -1402,20 +1580,45 @@ class GraphWriter:
 
             def _run_external(rows, child_label):
                 child_match = f"MATCH (child:{_cypher_label(child_label, backend)} {{name: row.child_name, path: row.path}})"
-                query = f"""
+                # Node pass then relationship pass, both batched (see
+                # "Splitting node and relationship MERGEs"); the parent is
+                # only created for a child that exists, as before.
+                node_query = f"""
                     UNWIND $batch AS row
                     {child_match}
                     MERGE (parent:ExternalClass {{name: row.parent_name}})
+                """
+                rel_query = f"""
+                    UNWIND $batch AS row
+                    {child_match}
+                    MATCH (parent:ExternalClass {{name: row.parent_name}})
                     MERGE (child)-[r:INHERITS]->(parent)
                     SET r.confidence_label = coalesce(row.confidence_label, 'INFERRED')
                 """
-                for chunk in _chunks(rows):
-                    try:
-                        session.run(query, batch=chunk)
-                    except Exception as e:
-                        if _is_binder_exception(e):
-                            return
-                        raise e
+                # Batched, a row is a struct: a key some rows lack fails to bind
+                # (the per-row loop read it as a NULL parameter), so every row
+                # carries the same fields.
+                rows = [
+                    {
+                        "child_name": r.get("child_name"),
+                        "path": r.get("path"),
+                        "parent_name": r.get("parent_name"),
+                        "confidence_label": r.get("confidence_label"),
+                    }
+                    for r in rows
+                ]
+                node_rows = sorted(rows, key=lambda r: str(r["parent_name"]))
+                rel_rows = _last_row_per_key(
+                    rows, lambda r: (r["child_name"], r["path"], r["parent_name"])
+                )
+                for query, query_rows in ((node_query, node_rows), (rel_query, rel_rows)):
+                    for chunk in _chunks(query_rows):
+                        try:
+                            session.run(query, batch=chunk)
+                        except Exception as e:
+                            if _is_binder_exception(e):
+                                return
+                            raise e
 
             # Group internal rows by the labels resolution pinned down, so only the
             # (child_label, parent_label) pairs that actually occur run — instead of a
@@ -2597,6 +2800,24 @@ DETACH DELETE r, n
             ).single()
         cnt = result["cnt"] if result else 0
         info_logger(f"[RELINK] Deleted {cnt} outgoing CALLS from {len(file_paths)} caller files")
+
+    def delete_orphan_external_classes(self) -> None:
+        """Remove the ExternalClass nodes no edge points to any more.
+
+        They exist only as the far end of CALLS / INHERITS edges; once a
+        re-link sends those edges to a project type, the node is left over.
+        """
+        backend = get_backend_type(self.driver, self._db_manager)
+
+        def _work(session):
+            result = session.run(
+                "MATCH (e:ExternalClass) WHERE NOT (e)--() DELETE e RETURN count(e) AS cnt"
+            ).single()
+            return result["cnt"] if result else 0
+
+        cnt = execute_write_operation(self.driver, backend, _work)
+        if cnt:
+            info_logger(f"[RELINK] Deleted {cnt} ExternalClass node(s) left without edges")
 
     def delete_inherits_for_files(self, file_paths: List[str]) -> None:
         backend = get_backend_type(self.driver, self._db_manager)

@@ -64,6 +64,7 @@ def _atomic_write_text(path: Path, content: str, *, secure: bool = False) -> Non
     os.replace(tmp_path, path)
     if secure:
         os.chmod(path, 0o600)
+    invalidate_config_cache()
 
 # Configuration file location
 CONFIG_DIR = Path.home() / ".code-visualizer"
@@ -95,6 +96,7 @@ DEFAULT_CONFIG = {
     "COMPLEXITY_THRESHOLD": "10",
     "MAX_DEPTH": "unlimited",
     "PARALLEL_WORKERS": "4",
+    "GRAPH_FIRST_PASS_FILES": "1000",
     "CACHE_ENABLED": "true",
     "IGNORE_DIRS": "node_modules,venv,.venv,env,.env,dist,build,target,out,.git,.idea,.vscode,__pycache__",
     "INDEX_SOURCE": "true",
@@ -147,6 +149,11 @@ CONFIG_DESCRIPTIONS = {
     "COMPLEXITY_THRESHOLD": "Cyclomatic complexity warning threshold",
     "MAX_DEPTH": "Maximum directory depth for indexing (unlimited or number)",
     "PARALLEL_WORKERS": "Parallel parse workers for indexing and the file watcher (clamped to 32)",
+    "GRAPH_FIRST_PASS_FILES": (
+        "When cviz graph indexes a repository for the first time, how many files it indexes before the "
+        "page opens (code before tests and generated files, shallow directories first); the others are "
+        "indexed in the background, the live badge showing the progress. 0 or unlimited: all at once."
+    ),
     "CACHE_ENABLED": "Enable caching for faster re-indexing",
     "IGNORE_DIRS": "Comma-separated list of directory names to ignore during indexing",
     "INDEX_SOURCE": "Store full source code in graph database (for faster indexing use false, for better performance use true)",
@@ -354,7 +361,64 @@ def ensure_global_cvizignore() -> bool:
 MCP_SERVER_KEY = "code-visualizer"
 
 
+# load_config() is called on every log line (debug_log, info_logger...) and
+# by most get_config_value() calls: tens of thousands of times in one index,
+# each re-reading the .env files and the environment (~10 s of CPU, holding
+# the GIL the parser threads need). The result is cached for as long as what
+# it was computed from is unchanged: the working directory, the environment,
+# the defaults, and the identity and stat of each .env file it may read.
+# One (key, config) tuple, replaced as a whole: the indexer's threads read it.
+_CONFIG_CACHE: List[Any] = [None]
+
+
+def invalidate_config_cache() -> None:
+    """Forget the cached configuration; the next load_config() reads again."""
+    _CONFIG_CACHE[0] = None
+
+
+def _file_signature(path: Path):
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return (st.st_mtime_ns, st.st_size, st.st_ino, st.st_mode)
+
+
+def _config_cache_key():
+    """What load_config() depends on, or None when it cannot be determined."""
+    try:
+        cwd = os.getcwd()
+    except OSError:
+        return None
+    return (
+        cwd,
+        str(CONFIG_FILE),
+        _file_signature(CONFIG_FILE),
+        _file_signature(Path(cwd) / ".code-visualizer" / ".env"),
+        _file_signature(Path(cwd) / ".env"),
+        tuple(os.environ.items()),
+        tuple(DEFAULT_CONFIG.items()),
+        DB_PATH_ENV_KEYS,
+        tuple(DATABASE_CREDENTIAL_KEYS),
+    )
+
+
 def load_config() -> Dict[str, str]:
+    """Load the configuration (see _load_config_uncached), cached.
+
+    Returns a new dict on every call: callers may modify it.
+    """
+    key = _config_cache_key()
+    cached = _CONFIG_CACHE[0]
+    if key is not None and cached is not None and cached[0] == key:
+        return dict(cached[1])
+    config = _load_config_uncached()
+    if key is not None:
+        _CONFIG_CACHE[0] = (key, dict(config))
+    return config
+
+
+def _load_config_uncached() -> Dict[str, str]:
     """
     Load configuration with priority support.
     Priority order (highest to lowest):
@@ -574,6 +638,13 @@ def validate_config_value(key: str, value: str) -> tuple[bool, Optional[str]]:
                 return False, "PARALLEL_WORKERS must be between 1 and 32"
         except ValueError:
             return False, "PARALLEL_WORKERS must be a number"
+
+    if key == "GRAPH_FIRST_PASS_FILES" and value.strip().lower() != "unlimited":
+        try:
+            if int(value) < 0:
+                return False, "GRAPH_FIRST_PASS_FILES must be 0, unlimited or a positive integer"
+        except ValueError:
+            return False, "GRAPH_FIRST_PASS_FILES must be 0, unlimited or a positive integer"
 
     if key == "MAX_TOOL_RESPONSE_TOKENS":
         try:

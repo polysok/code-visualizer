@@ -672,6 +672,16 @@ class EmbeddedDriverWrapper:
         return getattr(self, "_backend_id", "embedded")
 
 
+def _always_comma_join() -> bool:
+    """Comma-join every MATCH chain of an UNWIND query, as before (see 1.5e).
+
+    By default a chain made only of primary-key lookups stays chained, which
+    LadybugDB binds correctly and plans much faster.
+    CVIZ_LADYBUG_COMMA_MATCH=true restores the old behaviour.
+    """
+    return os.environ.get("CVIZ_LADYBUG_COMMA_MATCH", "false").strip().lower() in ("1", "true", "yes", "on")
+
+
 def _row_replay_enabled() -> bool:
     """Single-row replay of batched relationship MERGEs (LadybugDB #1710 workaround)."""
     return os.environ.get("CVIZ_LADYBUG_ROW_REPLAY", "false").strip().lower() in ("1", "true", "yes", "on")
@@ -1126,6 +1136,107 @@ class EmbeddedSessionWrapper:
             error_logger(f"Kuzu Query failed: {query[:100]}... Error: {e}")
             debug_log(f"Kuzu Query failed: {query[:100]}... Error: {e}")
             raise e
+    _MATCH_CHAIN_RE = re.compile(
+        r'(?<!OPTIONAL )\bMATCH\s*\([^()]*\)(?:\s*,\s*\([^()]*\))*'
+        r'(?:\s+MATCH\s*\([^()]*\)(?:\s*,\s*\([^()]*\))*)+'
+    )
+
+    def _is_key_lookup(self, pattern: str, pk_map: Dict[str, str]) -> bool:
+        """``v:Label {pk: …}``: one property, the label's primary key."""
+        m = re.fullmatch(r'\s*\w+\s*:\s*`?(\w+)`?\s*\{([^{}]*)\}\s*', pattern)
+        if not m:
+            return False
+        label, props_str = m.groups()
+        pk = pk_map.get(label) or ('uid' if label in self.uid_map else None)
+        keys = [k.strip() for k, _ in re.findall(r'(\w+)\s*:\s*([^,{}]+)', props_str)]
+        return pk is not None and keys == [pk]
+
+    def _join_match_chains(self, query: str, pk_map: Dict[str, str]) -> str:
+        """1.5e: comma-join each MATCH chain, unless it holds key lookups only."""
+        always = _always_comma_join()
+
+        def _join(m):
+            chain = m.group(0)
+            patterns = re.findall(r'\(([^()]*)\)', chain)
+            if not always and all(self._is_key_lookup(p, pk_map) for p in patterns):
+                return chain
+            return re.sub(r'\s+MATCH\s*(?=\()', ', ', chain)
+
+        return self._MATCH_CHAIN_RE.sub(_join, query)
+
+    _UID_LINE_PARTS = ("line_number", "function_line_number", "end_line")
+
+    def _match_by_uid(self, query: str, row_var: str, batch_data: list, parameters: Dict[str, Any]) -> str:
+        """Rewrite ``MATCH (v:Label {<uid components>})`` into a uid lookup.
+
+        Only for labels keyed on a synthesized uid, only when the pattern
+        names every uid component (from ``row.x`` or ``$param``) and every row
+        has a usable value for each (not None; not -1 for a line, which 1.5b
+        replaces by a fallback hash). The uid is then exactly the one 1.5b
+        computed when the node was merged, so the MATCH finds the same node.
+        Anything else is left as it is.
+        """
+        node_re = re.compile(r'\((\w+):([^\s\{\)]+)\s*\{([^}]+)\}\)')
+        # Right to left, so the offsets of the patterns still to visit hold.
+        for m in reversed(list(node_re.finditer(query))):
+            var_name, label_raw, props_str = m.groups()
+            label = label_raw.strip('`')
+            pk_parts = self.uid_map.get(label)
+            if not pk_parts or 'uid' in props_str:
+                continue
+            if re.search(r'MERGE\s*$', query[: m.start()]):
+                continue  # a MERGE pattern: 1.5b owns it
+            props = dict(
+                (k.strip(), v.strip())
+                for k, v in re.findall(r'(\w+)\s*:\s*([^,{}]+)', props_str)
+            )
+            if set(props) - set(pk_parts) or set(pk_parts) - set(props):
+                continue  # extra or missing keys: not a pure primary-key match
+            sources = []
+            for part in pk_parts:
+                ref = props[part]
+                row_ref = re.fullmatch(rf'{re.escape(row_var)}\.(\w+)', ref)
+                param_ref = re.fullmatch(r'\$(\w+)', ref)
+                if row_ref:
+                    sources.append(("row", row_ref.group(1), part))
+                elif param_ref and param_ref.group(1) in parameters:
+                    sources.append(("param", param_ref.group(1), part))
+                else:
+                    sources = None
+                    break
+            if not sources:
+                continue
+
+            def _component(kind, name, part, item):
+                val = item.get(name) if kind == "row" else parameters.get(name)
+                if val is None or (part in self._UID_LINE_PARTS and val == -1):
+                    return None
+                if isinstance(val, bool) or not isinstance(val, (str, int)):
+                    return None
+                return str(val)
+
+            uids = []
+            for item in batch_data:
+                if not isinstance(item, dict):
+                    uids = None
+                    break
+                parts = [_component(k, n, p, item) for k, n, p in sources]
+                if any(c is None for c in parts):
+                    uids = None
+                    break
+                uids.append(''.join(parts))
+            if not uids:
+                continue
+            field = f"cviz_uid_{var_name}"
+            for item, uid in zip(batch_data, uids):
+                item[field] = uid
+            query = (
+                query[: m.start()]
+                + f"({var_name}:{label_raw} {{uid: {row_var}.{field}}})"
+                + query[m.end():]
+            )
+        return query
+
     def _translate_query(self, query: str, parameters: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
         """Translates the Neo4j-dialect Cypher the code writes into LadybugDB Cypher."""
         PK_MAP = {
@@ -1208,26 +1319,7 @@ class EmbeddedSessionWrapper:
         #   b) MERGE uid injection from row fields (row.name, row.line_number, …)
         unwind_m = re.search(r'UNWIND\s+\$(\w+)\s+AS\s+(\w+)', query)
         if unwind_m:
-            # 1.5-pre: Collapse consecutive MATCH clauses into one comma-joined
-            # MATCH. LadybugDB's planner silently yields ZERO rows for
-            # UNWIND → MATCH (a {…}) → MATCH (b {…}) when the first MATCH is an
-            # index-map lookup (File-by-path being the everyday case): each
-            # MATCH works alone, chained they produce nothing — no error is
-            # raised, so downstream MERGEs quietly write no edges. That was the
-            # exact signature of the parity gap (all File-sourced CALLS edges
-            # and a handful of Struct CONTAINS edges missing on ladybug only).
-            # The comma form `MATCH (a {…}), (b {…})` is semantically identical
-            # for non-optional patterns and both engines plan it correctly.
-            # Only simple node patterns (no relationship arrows, no parens
-            # inside the pattern) directly adjacent to the next MATCH are
-            # merged, and never across OPTIONAL MATCH.
-            _match_merge_re = re.compile(
-                r'(?<!OPTIONAL )\bMATCH\s*(\([^()]*\)(?:\s*,\s*\([^()]*\))*)\s+MATCH\s*(?=\()'
-            )
-            _prev = None
-            while _prev != query:
-                _prev = query
-                query = _match_merge_re.sub(r'MATCH \1, ', query, count=1)
+            # (1.5-pre, the comma-join of MATCH chains, runs at the end: 1.5e.)
             batch_param = unwind_m.group(1)
             row_var = unwind_m.group(2)
             batch_data = parameters.get(batch_param)
@@ -1257,9 +1349,12 @@ class EmbeddedSessionWrapper:
                     replacement = ("SET " + ", ".join(parts)) if parts else ""
                     query = set_plus_re.sub(replacement, query, count=1)
 
-                # 1.5b: Inject uid into MERGE clauses that reference UNWIND row fields
+                # 1.5b: Inject uid into MERGE clauses that reference UNWIND row fields.
+                # CREATE clauses get it too (the writer creates the symbols of a
+                # file new to the graph, see GraphWriter.add_file_to_graph) and
+                # keep their pattern properties inline.
                 merge_re = re.compile(
-                    r'MERGE\s+\((\w+):([^\s\{]+)\s*\{([^}]+)\}\)'
+                    r'(?:MERGE|CREATE)\s+\((\w+):([^\s\{]+)\s*\{([^}]+)\}\)'
                 )
                 for m in list(merge_re.finditer(query)):
                      var_name, label_raw, props_str = m.groups()
@@ -1349,6 +1444,17 @@ class EmbeddedSessionWrapper:
                              count=1,
                          )
 
+                # 1.5b': MATCH by primary key. A MATCH on the uid's components
+                # (name, path, line_number…) scans the whole label table for
+                # every batch, so a full index slowed down as the graph grew
+                # (quadratic). When every row holds every component, the uid
+                # is the one 1.5b gave the node (same concatenation), and the
+                # MATCH becomes a primary-key lookup on it.
+                # Not when every chain is comma-joined (the old behaviour):
+                # `MATCH (a {uid}), (b {uid})` is the slowest shape of all.
+                if not _always_comma_join():
+                    query = self._match_by_uid(query, row_var, batch_data, parameters)
+
                 # 1.5c: Strip explicit SET clauses for properties not in the schema
                 # (e.g. SET m.alias = row.alias when Module has no 'alias' column)
                 def _filter_set_clause(m_set):
@@ -1385,6 +1491,23 @@ class EmbeddedSessionWrapper:
                 # 1.5d: Translate ON CREATE SET / ON MATCH SET → plain SET (KuzuDB compat)
                 query = re.sub(r'\bON\s+CREATE\s+SET\b', 'SET', query, flags=re.IGNORECASE)
                 query = re.sub(r'\bON\s+MATCH\s+SET\b', 'SET', query, flags=re.IGNORECASE)
+
+            # 1.5e: Comma-join consecutive MATCH clauses (#1710). LadybugDB's
+            # planner silently mis-binds UNWIND → MATCH (a {key: row.x}) →
+            # MATCH (b {prop: row.y}): after a primary-key lookup, the next
+            # MATCH's predicates on row fields are lost, so a row binds nodes
+            # of other rows (or none) and the MERGEs below write wrong edges,
+            # with no error. The comma form `MATCH (a {…}), (b {…})` is
+            # semantically identical for non-optional patterns and binds
+            # correctly. Only simple node patterns (no relationship arrows,
+            # no parens inside) directly adjacent to the next MATCH are
+            # joined, and never across OPTIONAL MATCH.
+            # A chain made only of primary-key lookups binds correctly
+            # chained, and the comma form plans it as a join whose cost grows
+            # with the tables (35 s against 14 ms for a 500-row CALLS batch
+            # on 160,000 functions): such chains stay as they are. 1.5b'
+            # above turns most writer MATCHes into such lookups.
+            query = self._join_match_chains(query, PK_MAP)
 
         # 2. Handle UID injection for MERGE (non-UNWIND queries)
         # We look for MERGE (v:Label {props})

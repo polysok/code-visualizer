@@ -630,15 +630,26 @@ class TestAddFileToGraph:
 
         gb.add_file_to_graph(file_data, "my_repo", {}, repo_path_str="/repo")
 
-        # One query merges the Module node (keeping existing metadata) and the IMPORTS edge
+        # A node pass merges the Module (keeping existing metadata), then a
+        # relationship pass merges the IMPORTS edge onto the matched Module.
+        module_call = next(
+            c
+            for c in session.calls
+            if "MERGE (m:Module {name: row.name})" in c["query"]
+        )
+        assert "IMPORTS" not in module_call["query"]
+        assert "m.lang = coalesce(m.lang, row.lang)" in module_call["query"]
+        assert "m.full_import_name = coalesce(m.full_import_name, row.full_import_name)" in module_call["query"]
+        assert module_call["kwargs"]["batch"] == [
+            {"name": "Display", "lang": "rust", "full_import_name": "use std::fmt::{Debug, Display};"}
+        ]
         import_call = next(
             c
             for c in session.calls
             if "MERGE (f)-[r:IMPORTS {line_number: row.line_number" in c["query"]
         )
-        assert "MERGE (m:Module {name: row.name})" in import_call["query"]
-        assert "m.lang = coalesce(m.lang, row.lang)" in import_call["query"]
-        assert "m.full_import_name = coalesce(m.full_import_name, row.full_import_name)" in import_call["query"]
+        assert "MATCH (m:Module {name: row.name})" in import_call["query"]
+        assert "MERGE (m:Module" not in import_call["query"]
         assert "r.full_import_name = row.full_import_name" in import_call["query"]
         assert "r.lang = row.lang" in import_call["query"]
 
