@@ -77,9 +77,12 @@
     what.className = "what";
     what.textContent = t.state === "error" ? t.error
       : "The first time, the repository is indexed: it can take a few minutes on a large one.";
+    const progress = document.createElement("div");
+    progress.className = "progress";
+    progress.innerHTML = '<div class="phase"></div><div class="bar"><i></i></div><div class="numbers"></div>';
     const log = document.createElement("pre");
     log.textContent = t.log.join("\n");
-    box.append(h, what, log);
+    box.append(h, what, progress, log);
     if (t.state === "error") {
       const actions = document.createElement("div");
       actions.className = "actions";
@@ -91,10 +94,56 @@
     }
     t.view.appendChild(box);
     log.scrollTop = log.scrollHeight;
+    renderProgress(t);
   }
 
+  // The "Indexing: <phase> [<done>/<total> (<pct>%)]" lines of cviz graph
+  // (cli_helpers._index_progress_line): the phase, a bar for the counted
+  // phases, the time spent and, once a counted phase is under way, the time left.
+  const PROGRESS_LINE = /^Indexing: (.+?)(?: (\d+)\/(\d+) \((\d+)%\))?$/;
+  const duration = (ms) => {
+    const s = Math.max(0, Math.round(ms / 1000));
+    return s >= 60 ? `${Math.floor(s / 60)} min ${String(s % 60).padStart(2, "0")} s` : `${s} s`;
+  };
+  function readProgress(t, line) {
+    const m = PROGRESS_LINE.exec(line);
+    if (!m) return false;
+    const [, phase, done, total] = m;
+    const now = Date.now();
+    if (!t.progress || t.progress.phase !== phase) t.progress = { phase, since: now, firstDone: Number(done || 0) };
+    t.progress.done = done === undefined ? null : Number(done);
+    t.progress.total = total === undefined ? null : Number(total);
+    return true;
+  }
+  function renderProgress(t) {
+    const box = t.view.querySelector(".progress");
+    if (!box) return;
+    const p = t.progress;
+    box.hidden = !p && t.state !== "starting";
+    const elapsed = t.startedAt ? duration(Date.now() - t.startedAt) : "";
+    if (!p) {
+      box.querySelector(".phase").textContent = "Starting the graph server…";
+      box.querySelector(".bar").hidden = true;
+      box.querySelector(".numbers").textContent = elapsed;
+      return;
+    }
+    const counted = p.total > 0 && p.done !== null;
+    box.querySelector(".phase").textContent = p.phase.startsWith("done") ? `Indexed, ${p.phase}` : p.phase[0].toUpperCase() + p.phase.slice(1);
+    box.querySelector(".bar").hidden = !counted;
+    let numbers = elapsed;
+    if (counted) {
+      box.querySelector(".bar i").style.width = `${(100 * p.done / p.total).toFixed(1)}%`;
+      numbers = `${p.done.toLocaleString()} / ${p.total.toLocaleString()} files · ${elapsed}`;
+      const doneHere = p.done - p.firstDone, spent = Date.now() - p.since;
+      if (doneHere > 0 && spent > 3000) numbers += ` · about ${duration(spent / doneHere * (p.total - p.done))} left for this step`;
+    }
+    box.querySelector(".numbers").textContent = numbers;
+  }
+  // The time spent moves on between two lines.
+  setInterval(() => tabs.forEach((t) => { if (t.state === "starting") renderProgress(t); }), 1000);
+
   async function start(t) {
-    t.state = "starting"; t.error = undefined; t.log = [];
+    t.state = "starting"; t.error = undefined; t.log = []; t.progress = null; t.startedAt = Date.now();
     renderTab(t); renderView(t);
     try {
       const server = await invoke("open_repo", { path: t.path });
@@ -160,6 +209,7 @@
     const { path, line } = event.payload;
     const t = tabs.find((x) => x.path === path);
     if (!t) return;
+    if (readProgress(t, line)) { if (t === active) renderProgress(t); return; }
     t.log.push(line);
     if (t.log.length > MAX_LOG) t.log.splice(0, t.log.length - MAX_LOG);
     if (t.state !== "ready" && t === active) {

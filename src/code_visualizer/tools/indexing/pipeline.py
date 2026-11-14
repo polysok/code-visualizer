@@ -184,6 +184,10 @@ async def run_tree_sitter_index_async(
     if job_id:
         job_manager.update_job(job_id, total_files=len(files))
 
+    # The phases are reported on the job (status_message, and processed_files
+    # out of total_files for the counted ones): `cviz graph` shows them.
+    if job_id:
+        job_manager.update_job(job_id, status_message="scanning the imports")
     debug_log("Starting pre-scan to build imports map...")
     imports_map = await asyncio.to_thread(pre_scan_for_imports, files, parsers.keys(), get_parser)
     debug_log(f"Pre-scan complete. Found {len(imports_map)} definitions.")
@@ -192,6 +196,8 @@ async def run_tree_sitter_index_async(
     resolved_repo_path_str = path.resolve().as_posix() if path.is_dir() else path.parent.resolve().as_posix()
 
     processed_count = 0
+    if job_id:
+        job_manager.update_job(job_id, status_message="parsing files", processed_files=0)
     concurrency_limit = get_parallel_workers()
     semaphore = asyncio.Semaphore(concurrency_limit)
     
@@ -246,7 +252,12 @@ async def run_tree_sitter_index_async(
     # so an exception escaping this loop left a partially written graph with no
     # rollback and every remaining file silently unindexed.
     write_failures: List[Dict[str, Any]] = []
-    for file_data in sorted(all_file_data, key=lambda data: str(data.get("path") or "")):
+    if job_id:
+        job_manager.update_job(job_id, status_message="writing to the graph", processed_files=0,
+                               total_files=len(all_file_data))
+    for written, file_data in enumerate(sorted(all_file_data, key=lambda data: str(data.get("path") or "")), 1):
+        if job_id:
+            job_manager.update_job(job_id, processed_files=written)
         repo_path = Path(file_data.pop("_index_repo_path"))
         if file_data.pop("_index_companion", False):
             file_repo_name, file_repo_path_str = repo_path.name, repo_path.resolve().as_posix()

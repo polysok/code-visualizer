@@ -6,6 +6,7 @@ import urllib.error
 import urllib.parse
 from collections import Counter
 from pathlib import Path
+import sys
 import time
 import os
 from typing import Optional, List, Dict, Any
@@ -785,6 +786,48 @@ def graph_helper(
         db_manager.close_driver()
 
 
+def _duration(seconds: float) -> str:
+    seconds = int(seconds)
+    return f"{seconds // 60} min {seconds % 60:02d} s" if seconds >= 60 else f"{seconds} s"
+
+
+def _index_progress_line(job) -> str:
+    """``Indexing: <phase> <done>/<total> (<pct>%)`` (the count for the phases
+    that have one). The desktop app reads these lines to show a progress bar."""
+    phase = (job.status_message or "starting").rstrip(". ")
+    counted = phase in ("parsing files", "writing to the graph") and job.total_files
+    if counted:
+        pct = int(100 * job.processed_files / job.total_files)
+        return f"Indexing: {phase} {job.processed_files}/{job.total_files} ({pct}%)"
+    return f"Indexing: {phase}"
+
+
+def _report_index_progress(job_manager, job_id: str):
+    """Prints the progress of *job_id* until the returned event is set: every
+    second when another program reads the output, else at each new phase and
+    every 5 % (a terminal)."""
+    import threading
+
+    stop = threading.Event()
+    every_second = not sys.stdout.isatty()
+
+    def report():
+        last_line, last_key = None, None
+        while not stop.wait(1.0):
+            job = job_manager.get_job(job_id)
+            if job is None:
+                continue
+            line = _index_progress_line(job)
+            pct = int(100 * job.processed_files / job.total_files) if job.total_files else 0
+            key = (job.status_message, pct // 5)
+            if line != last_line and (every_second or key != last_key):
+                print(line, flush=True)
+                last_line, last_key = line, key
+
+    threading.Thread(target=report, name="index-progress", daemon=True).start()
+    return stop
+
+
 def _start_graph_watcher(watch_path, graph_builder, code_finder, ctx, use_polling, full_resync_hours):
     """Index if needed, then watch *watch_path* with start-up resynchronisation."""
     from ..core.watcher import CodeWatcher
@@ -798,11 +841,16 @@ def _start_graph_watcher(watch_path, graph_builder, code_finder, ctx, use_pollin
         console.print(f"[yellow]Indexing {path_obj} first...[/yellow]")
         # The server vectorizes once it is up (catch_up_vectorization).
         graph_builder.semantic_search = False
+        job_id = graph_builder.job_manager.create_job(str(path_obj))
+        stop = _report_index_progress(graph_builder.job_manager, job_id)
+        started = time.time()
         try:
             asyncio.run(graph_builder.build_graph_from_path_async(
-                path_obj, is_dependency=False, cvizignore_path=ctx.cvizignore_path))
+                path_obj, is_dependency=False, job_id=job_id, cvizignore_path=ctx.cvizignore_path))
         finally:
+            stop.set()
             graph_builder.semantic_search = None
+        print(f"Indexing: done in {_duration(time.time() - started)}", flush=True)
     watcher = CodeWatcher(graph_builder, JobManager(), use_polling=use_polling)
     watcher.start()
     watcher.watch_directory(
