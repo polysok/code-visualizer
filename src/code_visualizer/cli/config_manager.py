@@ -64,6 +64,7 @@ def _atomic_write_text(path: Path, content: str, *, secure: bool = False) -> Non
     os.replace(tmp_path, path)
     if secure:
         os.chmod(path, 0o600)
+    invalidate_config_cache()
 
 # Configuration file location
 CONFIG_DIR = Path.home() / ".code-visualizer"
@@ -354,7 +355,64 @@ def ensure_global_cvizignore() -> bool:
 MCP_SERVER_KEY = "code-visualizer"
 
 
+# load_config() is called on every log line (debug_log, info_logger...) and
+# by most get_config_value() calls: tens of thousands of times in one index,
+# each re-reading the .env files and the environment (~10 s of CPU, holding
+# the GIL the parser threads need). The result is cached for as long as what
+# it was computed from is unchanged: the working directory, the environment,
+# the defaults, and the identity and stat of each .env file it may read.
+# One (key, config) tuple, replaced as a whole: the indexer's threads read it.
+_CONFIG_CACHE: List[Any] = [None]
+
+
+def invalidate_config_cache() -> None:
+    """Forget the cached configuration; the next load_config() reads again."""
+    _CONFIG_CACHE[0] = None
+
+
+def _file_signature(path: Path):
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return (st.st_mtime_ns, st.st_size, st.st_ino, st.st_mode)
+
+
+def _config_cache_key():
+    """What load_config() depends on, or None when it cannot be determined."""
+    try:
+        cwd = os.getcwd()
+    except OSError:
+        return None
+    return (
+        cwd,
+        str(CONFIG_FILE),
+        _file_signature(CONFIG_FILE),
+        _file_signature(Path(cwd) / ".code-visualizer" / ".env"),
+        _file_signature(Path(cwd) / ".env"),
+        tuple(os.environ.items()),
+        tuple(DEFAULT_CONFIG.items()),
+        DB_PATH_ENV_KEYS,
+        tuple(DATABASE_CREDENTIAL_KEYS),
+    )
+
+
 def load_config() -> Dict[str, str]:
+    """Load the configuration (see _load_config_uncached), cached.
+
+    Returns a new dict on every call: callers may modify it.
+    """
+    key = _config_cache_key()
+    cached = _CONFIG_CACHE[0]
+    if key is not None and cached is not None and cached[0] == key:
+        return dict(cached[1])
+    config = _load_config_uncached()
+    if key is not None:
+        _CONFIG_CACHE[0] = (key, dict(config))
+    return config
+
+
+def _load_config_uncached() -> Dict[str, str]:
     """
     Load configuration with priority support.
     Priority order (highest to lowest):
