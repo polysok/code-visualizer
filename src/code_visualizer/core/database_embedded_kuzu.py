@@ -672,9 +672,14 @@ class EmbeddedDriverWrapper:
         return getattr(self, "_backend_id", "embedded")
 
 
-def _comma_match_enabled() -> bool:
-    """Comma-join of consecutive MATCH clauses in UNWIND queries (zero-row workaround)."""
-    return os.environ.get("CVIZ_LADYBUG_COMMA_MATCH", "true").strip().lower() in ("1", "true", "yes", "on")
+def _always_comma_join() -> bool:
+    """Comma-join every MATCH chain of an UNWIND query, as before (see 1.5e).
+
+    By default a chain made only of primary-key lookups stays chained, which
+    LadybugDB binds correctly and plans much faster.
+    CVIZ_LADYBUG_COMMA_MATCH=true restores the old behaviour.
+    """
+    return os.environ.get("CVIZ_LADYBUG_COMMA_MATCH", "false").strip().lower() in ("1", "true", "yes", "on")
 
 
 def _row_replay_enabled() -> bool:
@@ -1131,6 +1136,34 @@ class EmbeddedSessionWrapper:
             error_logger(f"Kuzu Query failed: {query[:100]}... Error: {e}")
             debug_log(f"Kuzu Query failed: {query[:100]}... Error: {e}")
             raise e
+    _MATCH_CHAIN_RE = re.compile(
+        r'(?<!OPTIONAL )\bMATCH\s*\([^()]*\)(?:\s*,\s*\([^()]*\))*'
+        r'(?:\s+MATCH\s*\([^()]*\)(?:\s*,\s*\([^()]*\))*)+'
+    )
+
+    def _is_key_lookup(self, pattern: str, pk_map: Dict[str, str]) -> bool:
+        """``v:Label {pk: …}``: one property, the label's primary key."""
+        m = re.fullmatch(r'\s*\w+\s*:\s*`?(\w+)`?\s*\{([^{}]*)\}\s*', pattern)
+        if not m:
+            return False
+        label, props_str = m.groups()
+        pk = pk_map.get(label) or ('uid' if label in self.uid_map else None)
+        keys = [k.strip() for k, _ in re.findall(r'(\w+)\s*:\s*([^,{}]+)', props_str)]
+        return pk is not None and keys == [pk]
+
+    def _join_match_chains(self, query: str, pk_map: Dict[str, str]) -> str:
+        """1.5e: comma-join each MATCH chain, unless it holds key lookups only."""
+        always = _always_comma_join()
+
+        def _join(m):
+            chain = m.group(0)
+            patterns = re.findall(r'\(([^()]*)\)', chain)
+            if not always and all(self._is_key_lookup(p, pk_map) for p in patterns):
+                return chain
+            return re.sub(r'\s+MATCH\s*(?=\()', ', ', chain)
+
+        return self._MATCH_CHAIN_RE.sub(_join, query)
+
     _UID_LINE_PARTS = ("line_number", "function_line_number", "end_line")
 
     def _match_by_uid(self, query: str, row_var: str, batch_data: list, parameters: Dict[str, Any]) -> str:
@@ -1286,26 +1319,7 @@ class EmbeddedSessionWrapper:
         #   b) MERGE uid injection from row fields (row.name, row.line_number, …)
         unwind_m = re.search(r'UNWIND\s+\$(\w+)\s+AS\s+(\w+)', query)
         if unwind_m:
-            # 1.5-pre: Collapse consecutive MATCH clauses into one comma-joined
-            # MATCH. LadybugDB's planner silently yields ZERO rows for
-            # UNWIND → MATCH (a {…}) → MATCH (b {…}) when the first MATCH is an
-            # index-map lookup (File-by-path being the everyday case): each
-            # MATCH works alone, chained they produce nothing — no error is
-            # raised, so downstream MERGEs quietly write no edges. That was the
-            # exact signature of the parity gap (all File-sourced CALLS edges
-            # and a handful of Struct CONTAINS edges missing on ladybug only).
-            # The comma form `MATCH (a {…}), (b {…})` is semantically identical
-            # for non-optional patterns and both engines plan it correctly.
-            # Only simple node patterns (no relationship arrows, no parens
-            # inside the pattern) directly adjacent to the next MATCH are
-            # merged, and never across OPTIONAL MATCH.
-            _match_merge_re = re.compile(
-                r'(?<!OPTIONAL )\bMATCH\s*(\([^()]*\)(?:\s*,\s*\([^()]*\))*)\s+MATCH\s*(?=\()'
-            )
-            _prev = None
-            while _comma_match_enabled() and _prev != query:
-                _prev = query
-                query = _match_merge_re.sub(r'MATCH \1, ', query, count=1)
+            # (1.5-pre, the comma-join of MATCH chains, runs at the end: 1.5e.)
             batch_param = unwind_m.group(1)
             row_var = unwind_m.group(2)
             batch_data = parameters.get(batch_param)
@@ -1433,7 +1447,10 @@ class EmbeddedSessionWrapper:
                 # (quadratic). When every row holds every component, the uid
                 # is the one 1.5b gave the node (same concatenation), and the
                 # MATCH becomes a primary-key lookup on it.
-                query = self._match_by_uid(query, row_var, batch_data, parameters)
+                # Not when every chain is comma-joined (the old behaviour):
+                # `MATCH (a {uid}), (b {uid})` is the slowest shape of all.
+                if not _always_comma_join():
+                    query = self._match_by_uid(query, row_var, batch_data, parameters)
 
                 # 1.5c: Strip explicit SET clauses for properties not in the schema
                 # (e.g. SET m.alias = row.alias when Module has no 'alias' column)
@@ -1471,6 +1488,23 @@ class EmbeddedSessionWrapper:
                 # 1.5d: Translate ON CREATE SET / ON MATCH SET → plain SET (KuzuDB compat)
                 query = re.sub(r'\bON\s+CREATE\s+SET\b', 'SET', query, flags=re.IGNORECASE)
                 query = re.sub(r'\bON\s+MATCH\s+SET\b', 'SET', query, flags=re.IGNORECASE)
+
+            # 1.5e: Comma-join consecutive MATCH clauses (#1710). LadybugDB's
+            # planner silently mis-binds UNWIND → MATCH (a {key: row.x}) →
+            # MATCH (b {prop: row.y}): after a primary-key lookup, the next
+            # MATCH's predicates on row fields are lost, so a row binds nodes
+            # of other rows (or none) and the MERGEs below write wrong edges,
+            # with no error. The comma form `MATCH (a {…}), (b {…})` is
+            # semantically identical for non-optional patterns and binds
+            # correctly. Only simple node patterns (no relationship arrows,
+            # no parens inside) directly adjacent to the next MATCH are
+            # joined, and never across OPTIONAL MATCH.
+            # A chain made only of primary-key lookups binds correctly
+            # chained, and the comma form plans it as a join whose cost grows
+            # with the tables (35 s against 14 ms for a 500-row CALLS batch
+            # on 160,000 functions): such chains stay as they are. 1.5b'
+            # above turns most writer MATCHes into such lookups.
+            query = self._join_match_chains(query, PK_MAP)
 
         # 2. Handle UID injection for MERGE (non-UNWIND queries)
         # We look for MERGE (v:Label {props})
