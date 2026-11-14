@@ -632,9 +632,14 @@ class GraphBuilder:
     async def build_graph_from_path_async(
         self, path: Path, is_dependency: bool = False, job_id: str = None, cvizignore_path: str = None,
         companion_roots: Optional[list[Path]] = None,
+        first_pass_files: Optional[int] = None,
+        deferred_out: Optional[dict] = None,
     ):
         """Index *path*. Its companion sources (core.companions) are indexed in
-        the same pass unless *companion_roots* is given explicitly."""
+        the same pass unless *companion_roots* is given explicitly.
+
+        *first_pass_files* and *deferred_out* make the index staged (see
+        tools.indexing.pipeline.run_tree_sitter_index_async)."""
         from ..core import companions
 
         record_companions = companion_roots is None and not is_dependency and Path(path).is_dir()
@@ -709,6 +714,8 @@ class GraphBuilder:
                 index_summary=self.last_index_summary,
                 semantic_search=self.semantic_search,
                 companion_roots=companion_roots,
+                first_pass_files=first_pass_files,
+                deferred_out=deferred_out,
             )
             if record_companions and (companion_roots or companions.config_file(path).is_file()):
                 companions.record_indexed(path, companion_roots)

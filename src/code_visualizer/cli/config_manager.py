@@ -96,6 +96,7 @@ DEFAULT_CONFIG = {
     "COMPLEXITY_THRESHOLD": "10",
     "MAX_DEPTH": "unlimited",
     "PARALLEL_WORKERS": "4",
+    "GRAPH_FIRST_PASS_FILES": "1000",
     "CACHE_ENABLED": "true",
     "IGNORE_DIRS": "node_modules,venv,.venv,env,.env,dist,build,target,out,.git,.idea,.vscode,__pycache__",
     "INDEX_SOURCE": "true",
@@ -148,6 +149,11 @@ CONFIG_DESCRIPTIONS = {
     "COMPLEXITY_THRESHOLD": "Cyclomatic complexity warning threshold",
     "MAX_DEPTH": "Maximum directory depth for indexing (unlimited or number)",
     "PARALLEL_WORKERS": "Parallel parse workers for indexing and the file watcher (clamped to 32)",
+    "GRAPH_FIRST_PASS_FILES": (
+        "When cviz graph indexes a repository for the first time, how many files it indexes before the "
+        "page opens (code before tests and generated files, shallow directories first); the others are "
+        "indexed in the background, the live badge showing the progress. 0 or unlimited: all at once."
+    ),
     "CACHE_ENABLED": "Enable caching for faster re-indexing",
     "IGNORE_DIRS": "Comma-separated list of directory names to ignore during indexing",
     "INDEX_SOURCE": "Store full source code in graph database (for faster indexing use false, for better performance use true)",
@@ -632,6 +638,13 @@ def validate_config_value(key: str, value: str) -> tuple[bool, Optional[str]]:
                 return False, "PARALLEL_WORKERS must be between 1 and 32"
         except ValueError:
             return False, "PARALLEL_WORKERS must be a number"
+
+    if key == "GRAPH_FIRST_PASS_FILES" and value.strip().lower() != "unlimited":
+        try:
+            if int(value) < 0:
+                return False, "GRAPH_FIRST_PASS_FILES must be 0, unlimited or a positive integer"
+        except ValueError:
+            return False, "GRAPH_FIRST_PASS_FILES must be 0, unlimited or a positive integer"
 
     if key == "MAX_TOOL_RESPONSE_TOKENS":
         try:

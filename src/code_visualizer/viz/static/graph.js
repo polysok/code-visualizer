@@ -1032,6 +1032,14 @@
   let embedRunning = false;
   let embedBadge = "";   // live badge text while a vectorization runs
   function setEmbedBadge(text) { embedBadge = text; updateLive(); }
+  // Live badge text while cviz graph indexes the files it deferred (staged
+  // index: the page opens after the first files, the rest follow).
+  let indexBadge = "";
+  function onIndexProgress(ev) {
+    if (ev.error) { indexBadge = ""; toast(`Background indexing stopped: ${ev.error}`); }
+    else indexBadge = ev.done >= ev.total ? "indexing: linking…" : `indexing ${ev.done} / ${ev.total}`;
+    updateLive();
+  }
 
   async function refreshAiStatus() {
     try { aiStatus = await api("/api/ai/status"); } catch (_) { aiStatus = null; }
@@ -1446,9 +1454,10 @@
     const btn = $("live");
     btn.classList.toggle("on", live && !state.stale);
     btn.classList.toggle("stale", state.stale);
-    btn.classList.toggle("busy", !!embedBadge);
-    btn.title = embedBadge ? "Vectorizing the code for the natural-language search" : "Live updates";
-    $("live-text").textContent = embedBadge || text || (state.stale ? "graph updated · reload" : live ? "live" : "offline");
+    btn.classList.toggle("busy", !!(indexBadge || embedBadge));
+    btn.title = indexBadge ? "Indexing the rest of the repository (deeper folders, tests) in the background"
+      : embedBadge ? "Vectorizing the code for the natural-language search" : "Live updates";
+    $("live-text").textContent = indexBadge || embedBadge || text || (state.stale ? "graph updated · reload" : live ? "live" : "offline");
   }
   function displayedFiles() {
     const set = new Set();
@@ -1490,7 +1499,12 @@
     source.addEventListener("open", () => { live = true; updateLive(); });
     source.addEventListener("error", () => { live = false; updateLive(); });
     source.addEventListener("graph:changed", (e) => onGraphEvent(JSON.parse(e.data)));
-    source.addEventListener("index:done", (e) => onGraphEvent(JSON.parse(e.data)));
+    source.addEventListener("index:done", (e) => {
+      const ev = JSON.parse(e.data);
+      if (ev.deferred) { indexBadge = ""; updateLive(); }
+      onGraphEvent(ev);
+    });
+    source.addEventListener("index:progress", (e) => onIndexProgress(JSON.parse(e.data)));
     source.addEventListener("embed:progress", (e) => onEmbedEvent(JSON.parse(e.data)));
     source.addEventListener("embed:done", (e) => onEmbedEvent(JSON.parse(e.data)));
     source.addEventListener("focus", (e) => {

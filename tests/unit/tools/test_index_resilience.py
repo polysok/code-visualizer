@@ -61,7 +61,9 @@ def test_every_relative_to_in_the_writer_is_guarded():
 def test_pipeline_write_loop_catches_per_file_failures():
     """Defence in depth: there is no transaction around the write loop, so an
     exception escaping it leaves a partially written graph with no rollback."""
-    source = inspect.getsource(pipeline.run_tree_sitter_index_async)
+    # The parse-and-write loop of every stage (run_tree_sitter_index_async and
+    # run_deferred_index_async both run it).
+    source = inspect.getsource(pipeline._parse_and_write)
 
     assert "write_failures" in source, "per-file write failures must be collected"
     # The add_file_to_graph / add_minimal_file_node dispatch must sit inside a try.
@@ -76,6 +78,7 @@ def test_pipeline_write_loop_catches_per_file_failures():
         node.lineno
         for node in ast.walk(tree)
         if isinstance(node, ast.Name) and node.id in {"add_minimal_file_node"}
+        and isinstance(node.ctx, ast.Load)
     ]
     assert calls, "expected the minimal-file-node call to be present"
     assert all(line in protected for line in calls), (

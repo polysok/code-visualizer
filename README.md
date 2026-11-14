@@ -81,6 +81,14 @@ and offers to open the graph of the current repository. Run it again to
 upgrade. Afterwards, `cviz graph --watch .` in a repository opens its graph
 (http://localhost:9324/graph), indexing it first if needed.
 
+A large repository is indexed in two stages the first time: the page opens
+once the first 1,000 files are indexed (code before tests and generated
+files, shallow folders before deep ones), and the rest is indexed in the
+background, the live badge showing `indexing X / Y`; links between the two
+stages are resolved when the second ends. `cviz config set
+GRAPH_FIRST_PASS_FILES 3000` changes the size of the first stage, `0` indexes
+everything before opening the page. `cviz index` always indexes everything.
+
 By hand, the same thing:
 
 ```bash

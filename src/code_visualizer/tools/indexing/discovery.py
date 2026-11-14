@@ -2,6 +2,7 @@
 """Enumerate files to index with ignore rules."""
 
 import os
+import re
 from pathlib import Path
 from typing import Any, FrozenSet, List, Optional, Set, Tuple
 
@@ -156,3 +157,47 @@ def discover_files_to_index(
         files = filtered_files
 
     return sorted(files, key=lambda file: file.as_posix()), ignore_root
+
+
+# Staged indexing (see pipeline.run_tree_sitter_index_async): which files are
+# indexed first. Tests and generated code come last, then deeper files.
+_TEST_DIR_NAMES: FrozenSet[str] = frozenset({
+    "test", "tests", "__tests__", "testing", "spec", "specs", "e2e",
+    "fixtures", "testdata", "test_data", "unittests", "integrationtests",
+})
+_GENERATED_DIR_NAMES: FrozenSet[str] = frozenset({
+    "migrations", "generated", "gen", "__generated__", "obj", "vendor", "third_party",
+})
+_TEST_FILE_PATTERNS = (
+    re.compile(r"^test_.*\.py$"), re.compile(r".*_test\.(py|go)$"),
+    re.compile(r".*\.(test|spec)\.[cm]?[jt]sx?$"),
+    re.compile(r".*(Test|Tests|Spec|Specs)\.(cs|java|kt|scala|swift|php)$"),
+    re.compile(r".*_spec\.rb$"),
+)
+_GENERATED_FILE_PATTERNS = (
+    re.compile(r".*\.(designer|g|g\.i|generated|AssemblyInfo)\.cs$", re.IGNORECASE),
+    re.compile(r".*\.min\.(js|css)$"), re.compile(r".*\.generated\.\w+$"),
+    re.compile(r".*_pb2(_grpc)?\.py$"), re.compile(r".*\.pb\.go$"),
+)
+
+
+def file_priority(file: Path, root: Path) -> Tuple[int, int, str]:
+    """Sort key: (0 code / 1 test / 2 generated, depth, path)."""
+    try:
+        rel = file.resolve().relative_to(root.resolve())
+    except ValueError:
+        rel = Path(file.name)
+    dirs = {part.lower() for part in rel.parts[:-1]}
+    name = rel.name
+    if dirs & _GENERATED_DIR_NAMES or any(p.match(name) for p in _GENERATED_FILE_PATTERNS):
+        kind = 2
+    elif dirs & _TEST_DIR_NAMES or any(p.match(name) for p in _TEST_FILE_PATTERNS):
+        kind = 1
+    else:
+        kind = 0
+    return (kind, len(rel.parts), rel.as_posix())
+
+
+def prioritize_files(files: List[Path], root: Path) -> List[Path]:
+    """``files`` in the order a staged index takes them (see file_priority)."""
+    return sorted(files, key=lambda f: file_priority(f, root))
