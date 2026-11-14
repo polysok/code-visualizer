@@ -171,3 +171,41 @@ def test_row_folding_helpers():
         {"name": "M", "lang": "rust", "full_import_name": "use M::a;"},
         {"name": "N", "lang": "rust", "full_import_name": "use N;"},
     ]
+
+
+def _symbol_counts(driver):
+    return {lbl: _q(driver, f"MATCH (n:{lbl}) RETURN count(n) AS c")[0]["c"] for lbl in ("Function", "Parameter", "Class")} | {
+        "CONTAINS": _q(driver, "MATCH (:File)-[r:CONTAINS]->() RETURN count(r) AS c")[0]["c"],
+        "HAS_PARAMETER": _q(driver, "MATCH ()-[r:HAS_PARAMETER]->() RETURN count(r) AS c")[0]["c"]}
+
+
+NEW_FILE = {"path": A, "repo_path": REPO, "lang": "rust",
+            "functions": [_fn("f", 10, ["a", "b"]), _fn("f", 10, ["a", "c"]), _fn("g", 20, ["a"])],
+            "classes": [{"name": "K", "line_number": 1, "end_line": 30, "lang": "rust"}]}
+NEW_FILE_COUNTS = {"Function": 3, "Parameter": 4, "Class": 1, "CONTAINS": 4, "HAS_PARAMETER": 5}
+
+
+def test_new_file_symbols_are_created(env, monkeypatch):
+    writer, driver, forced, backend = env
+    import code_visualizer.tools.indexing.persistence.writer as w
+    seen = []
+    original = w._create_or_merge
+    monkeypatch.setattr(w, "_create_or_merge", lambda *a, **k: (seen.append(a[1]), original(*a, **k))[1])
+    writer.add_file_to_graph(dict(NEW_FILE), "fx", {})
+    assert any("CREATE (n:Function" in q for q in seen) and any("CREATE (p:Parameter" in q for q in seen)
+    assert _symbol_counts(driver) == NEW_FILE_COUNTS
+
+
+def test_reindexed_file_is_merged_not_duplicated(env):
+    writer, driver, forced, backend = env
+    writer.add_file_to_graph(dict(NEW_FILE), "fx", {})
+    writer.add_file_to_graph(dict(NEW_FILE), "fx", {})
+    assert _symbol_counts(driver) == NEW_FILE_COUNTS
+
+
+def test_leftover_node_falls_back_to_merge(env):
+    writer, driver, forced, backend = env
+    with driver.session() as s:   # a Function of the file, without its File node
+        s.run("MERGE (n:Function {name: $n, path: $p, line_number: $l, occurrence_index: $o})", n="g", p=A, l=20, o=0)
+    writer.add_file_to_graph(dict(NEW_FILE), "fx", {})
+    assert _symbol_counts(driver) == NEW_FILE_COUNTS

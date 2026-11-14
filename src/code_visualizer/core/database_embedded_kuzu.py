@@ -1349,9 +1349,12 @@ class EmbeddedSessionWrapper:
                     replacement = ("SET " + ", ".join(parts)) if parts else ""
                     query = set_plus_re.sub(replacement, query, count=1)
 
-                # 1.5b: Inject uid into MERGE clauses that reference UNWIND row fields
+                # 1.5b: Inject uid into MERGE clauses that reference UNWIND row fields.
+                # CREATE clauses get it too (the writer creates the symbols of a
+                # file new to the graph, see GraphWriter.add_file_to_graph) and
+                # keep their pattern properties inline.
                 merge_re = re.compile(
-                    r'MERGE\s+\((\w+):([^\s\{]+)\s*\{([^}]+)\}\)'
+                    r'(?:MERGE|CREATE)\s+\((\w+):([^\s\{]+)\s*\{([^}]+)\}\)'
                 )
                 for m in list(merge_re.finditer(query)):
                      var_name, label_raw, props_str = m.groups()

@@ -17,6 +17,6 @@ def test_ladybug_splits_parameter_import_and_inheritance_queries():
     )
     output = result.stdout + result.stderr
     assert result.returncode == 0, output
-    if "6 skipped" in result.stdout or "7 skipped" in result.stdout:
+    if "9 skipped" in result.stdout:
         pytest.skip("Ladybug native engine is unavailable in the subprocess")
-    assert "7 passed" in result.stdout, output
+    assert "10 passed" in result.stdout, output

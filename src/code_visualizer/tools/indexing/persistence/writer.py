@@ -163,6 +163,41 @@ def _module_metadata_rows(import_rows: List[Dict[str, Any]]) -> List[Dict[str, A
     return list(folded.values())
 
 
+def _file_is_new(session: Any, file_path: str) -> bool:
+    """True only when the graph certainly holds no File node at this path."""
+    try:
+        row = session.run(
+            "MATCH (f:File {path: $path}) RETURN count(f) AS n", path=file_path
+        ).single()
+        return row is not None and row["n"] == 0
+    except Exception:  # noqa: BLE001 - unknown: take the MERGE path
+        return False
+
+
+def _create_or_merge(
+    session: Any,
+    create_query: str,
+    merge_query: str,
+    *,
+    batch: List[Dict[str, Any]],
+    create_batch: Optional[List[Dict[str, Any]]] = None,
+    **params: Any,
+) -> None:
+    """Create the nodes of a file new to the graph; merge them if one exists.
+
+    A node can outlive its File (an interrupted write, a symbol whose uid
+    collides): CREATE then fails on the duplicated primary key, writing
+    nothing (a failed statement is rolled back), and the batch is merged.
+    """
+    try:
+        session.run(create_query, batch=create_batch if create_batch is not None else batch, **params)
+    except Exception as exc:  # noqa: BLE001 - only a duplicated key falls back
+        if "duplicated primary key" not in str(exc).lower():
+            raise
+        debug_log(f"CREATE hit an existing node, merging instead: {exc}")
+        session.run(merge_query, batch=batch, **params)
+
+
 def _assign_occurrence_indices(
     items: List[Dict[str, Any]],
 ) -> Tuple[List[int], List[Tuple[str, Any, int]]]:
@@ -439,6 +474,12 @@ class GraphWriter:
             except ValueError:
                 relative_path = file_name
 
+            # A file new to the graph has no symbol nodes yet: they are created
+            # (see _create_or_merge), not merged. MERGE makes LadybugDB scan the
+            # label table for every batch, which grows with the graph; CREATE
+            # costs the same whatever its size.
+            file_is_new = _file_is_new(session, file_path_str)
+
             session.run(
                 """
                 MERGE (f:File {path: $path})
@@ -701,15 +742,21 @@ class GraphWriter:
                     merge_clause = f"MERGE (n:{label} {{{node_key}}})"
                     match_clause = f"MATCH (n:{label} {{{node_key}}})"
 
-                session.run(
-                    f"""
+                node_query = f"""
                     UNWIND $batch AS row
                     {merge_clause}
                     SET n += row
-                """,
-                    batch=batch,
-                    file_path=file_path_str,
-                )
+                """
+                if file_is_new and keyed_by_position:
+                    _create_or_merge(
+                        session,
+                        node_query.replace("MERGE (n:", "CREATE (n:", 1),
+                        node_query,
+                        batch=batch,
+                        file_path=file_path_str,
+                    )
+                else:
+                    session.run(node_query, batch=batch, file_path=file_path_str)
                 session.run(
                     f"""
                     UNWIND $batch AS row
@@ -736,16 +783,28 @@ class GraphWriter:
                 # one query with both MERGEs is forced into the per-row loop.
                 # Sorting keeps rows sharing a Parameter key adjacent.
                 unique_params.sort(key=lambda r: (r["arg_name"], r["line_number"]))
-                session.run(
-                    """
+                param_node_query = """
                     UNWIND $batch AS row
                     MATCH (fn:Function {name: row.func_name, path: $file_path, line_number: row.line_number, occurrence_index: row.occurrence_index})
                     MERGE (p:Parameter {name: row.arg_name, path: $file_path, function_line_number: row.line_number})
                     SET p.name = row.arg_name, p.path = $file_path, p.function_line_number = row.line_number
-                """,
-                    batch=unique_params,
-                    file_path=file_path_str,
-                )
+                """
+                if file_is_new:
+                    # One row per Parameter: two occurrences of a function
+                    # share their (name, line) parameters, and CREATE, unlike
+                    # MERGE, would mint the node twice.
+                    _create_or_merge(
+                        session,
+                        param_node_query.replace("MERGE (p:", "CREATE (p:", 1),
+                        param_node_query,
+                        create_batch=_first_row_per_key(
+                            unique_params, lambda r: (r["arg_name"], r["line_number"])
+                        ),
+                        batch=unique_params,
+                        file_path=file_path_str,
+                    )
+                else:
+                    session.run(param_node_query, batch=unique_params, file_path=file_path_str)
                 session.run(
                     """
                     UNWIND $batch AS row
