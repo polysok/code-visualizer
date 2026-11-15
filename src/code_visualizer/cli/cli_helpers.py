@@ -683,6 +683,34 @@ def graph_start_url(base_url: str, target: Optional[str], changes: Optional[str]
     return f"{base_url}/graph"
 
 
+def _show_graph(base_url: str, url: str, repo_root: str, target: Optional[str],
+                changes: Optional[str], browser_only: bool, wait: float = 0) -> None:
+    """Show the page of a graph server: in the desktop app when it is
+    installed (started if needed), else in the browser.
+
+    The app's tab reuses this server (its own ``cviz graph`` finds it in the
+    server registry), so it must answer first: waits up to *wait* seconds.
+    A review (``--changes``) opens in the browser: the app has no such tab.
+    """
+    import webbrowser
+
+    from .open_in_graph import desktop_preferred, parse_location, server_alive, show_in_desktop
+
+    deadline = time.monotonic() + wait
+    while wait and not server_alive(base_url) and time.monotonic() < deadline:
+        time.sleep(0.3)
+    if not (browser_only or changes) and desktop_preferred():
+        path, line = repo_root, None
+        if target:
+            path_str, target_line = parse_location(target)
+            if not Path(path_str).is_dir():
+                path, line = str(Path(path_str).resolve()), target_line
+        if show_in_desktop(path, line, repo_root):
+            console.print("[green]Shown in Code Visualizer.[/green]")
+            return
+    webbrowser.open(url)
+
+
 def graph_helper(
     target: Optional[str] = None,
     host: str = "127.0.0.1",
@@ -693,8 +721,12 @@ def graph_helper(
     use_polling: Optional[bool] = None,
     full_resync_hours: float = 0,
     changes: Optional[str] = None,
+    browser_only: bool = False,
 ):
     """Serve the standalone dependency-graph page (``/graph``).
+
+    ``open_browser`` shows the page once the server answers: in the desktop
+    app when it is installed (unless ``browser_only``), else in the browser.
 
     With ``watch_path`` the incremental watcher runs in the same process and
     its updates reach open pages through ``/api/events``. Running both in one
@@ -717,9 +749,10 @@ def graph_helper(
         url = graph_start_url(running, target, changes)
         console.print(f"[green]The graph server of this repository already runs: {url}[/green]")
         if open_browser:
-            import webbrowser
+            from .server_registry import find_repo_root
 
-            webbrowser.open(url)
+            _show_graph(running, url, str(find_repo_root(Path(anchor or Path.cwd()).resolve())),
+                        target, changes, browser_only)
         return
     services = _initialize_services(context, cwd=Path(anchor).resolve() if anchor else None)
     if not all(services[:3]):
@@ -776,13 +809,12 @@ def graph_helper(
 
     if open_browser:
         import threading
-        import webbrowser
 
-        def _open():
-            time.sleep(1.2)
-            webbrowser.open(url)
-
-        threading.Thread(target=_open, daemon=True).start()
+        threading.Thread(
+            target=_show_graph, daemon=True,
+            args=(base_url, url, str(repo_root or Path(anchor or Path.cwd()).resolve()),
+                  target, changes, browser_only, 60.0),
+        ).start()
 
     if repo_root:
         # cviz-open, cviz update (Git hooks) and the IDE extensions find the

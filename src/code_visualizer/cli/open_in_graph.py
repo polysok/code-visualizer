@@ -6,7 +6,8 @@ steps:
 
 0. when the desktop app runs (``~/.code-visualizer/desktop.json``), hand it
    the artifact: it comes forward on the repository's tab (opened and its
-   server started if needed), centred on it;
+   server started if needed), centred on it; installed but not running
+   (macOS), it is started first;
 1. else ``POST /api/focus`` so a graph tab that is already open recentres on
    the artifact (no tab pile-up);
 2. if no tab is listening, open ``/graph?path=…&line=…`` in the browser.
@@ -125,6 +126,43 @@ def open_in_desktop(path: str, line: Optional[int], repo: Optional[str] = None) 
         return False
 
 
+# The desktop app's bundle identifier (desktop/src-tauri/tauri.conf.json).
+DESKTOP_BUNDLE_ID = "com.polysok.code-visualizer"
+
+
+def desktop_preferred() -> bool:
+    """False when CVIZ_OPEN_IN=browser asks for the browser even if the app is there."""
+    return os.getenv("CVIZ_OPEN_IN", "").lower() != "browser"
+
+
+def launch_desktop() -> bool:
+    """Start the installed desktop app (macOS); False when it is not installed
+    (or CVIZ_DESKTOP_LAUNCH=0)."""
+    if sys.platform != "darwin" or os.getenv("CVIZ_DESKTOP_LAUNCH") == "0":
+        return False
+    try:
+        return subprocess.run(["open", "-b", DESKTOP_BUNDLE_ID], capture_output=True,
+                              timeout=10).returncode == 0
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def show_in_desktop(path: str, line: Optional[int], repo: Optional[str] = None,
+                    launch: bool = True, timeout: float = 30.0) -> bool:
+    """Hand *path* to the desktop app, starting it first when it is installed
+    but not running; False when there is no app to show it."""
+    if open_in_desktop(path, line, repo):
+        return True
+    if not launch or not launch_desktop():
+        return False
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:  # until it records its endpoint
+        time.sleep(0.5)
+        if open_in_desktop(path, line, repo):
+            return True
+    return False
+
+
 def _cviz_command() -> List[str]:
     exe = shutil.which("cviz")
     if exe:
@@ -209,11 +247,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     path = str(Path(path_str).expanduser().resolve())
 
     browser_only = (args.browser or args.new_tab or args.server or args.print_only
-                    or os.getenv("CVIZ_OPEN_IN", "").lower() == "browser")
+                    or not desktop_preferred())
     if not browser_only:
         from .server_registry import find_repo_root
 
-        if open_in_desktop(path, line, str(find_repo_root(path))):
+        if show_in_desktop(path, line, str(find_repo_root(path))):
             print(f"cviz-open: shown in Code Visualizer: {path}:{line or ''}")
             return 0
 

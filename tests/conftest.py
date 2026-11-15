@@ -55,6 +55,9 @@ def _isolate_graph_events(tmp_path_factory, monkeypatch):
     # cviz-open must not reach the developer's running desktop app.
     if "CVIZ_DESKTOP_FILE" not in os.environ:
         monkeypatch.setenv("CVIZ_DESKTOP_FILE", str(tmp_path_factory.getbasetemp() / "desktop.json"))
+    # ... nor start the desktop app installed on the developer's machine.
+    if "CVIZ_DESKTOP_LAUNCH" not in os.environ:
+        monkeypatch.setenv("CVIZ_DESKTOP_LAUNCH", "0")
     # An MCP server built by a test must not start a real `cviz graph` in the
     # background (tests of that start-up set it back to 1).
     if "CVIZ_MCP_START_GRAPH" not in os.environ:

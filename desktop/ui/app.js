@@ -223,10 +223,11 @@
   tauri.event.listen("ide-open", (event) => {
     const { path, line, repo } = event.payload || {};
     if (!path) return;
-    const focus = { path, line: line || null };
+    // The repository itself (cviz graph in a terminal): its tab, no artifact.
+    const focus = repo && norm(path) === norm(repo) ? null : { path, line: line || null };
     const t = tabFor(path) || addTab(repo || path.replace(/[\\/][^\\/]*$/, ""), { activate: false });
     const frame = t.view.querySelector("iframe");
-    if (t.state === "ready" && frame) frame.contentWindow.postMessage({ type: "cviz:focus", ...focus }, "*");
+    if (t.state === "ready" && frame) { if (focus) frame.contentWindow.postMessage({ type: "cviz:focus", ...focus }, "*"); }
     else t.pendingFocus = focus;  // the page will open on it (renderView)
     activate(t);
   });

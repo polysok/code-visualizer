@@ -1628,7 +1628,8 @@ def graph(
         None, "--port", "-p",
         help=f"Port to serve on (default {DEFAULT_GRAPH_PORT}, or the next free one: one server per repository).",
     ),
-    no_browser: bool = typer.Option(False, "--no-browser", help="Do not open a browser tab."),
+    no_browser: bool = typer.Option(False, "--no-browser", help="Do not show the page (neither the desktop app nor a browser tab)."),
+    browser: bool = typer.Option(False, "--browser", help="Show the page in the browser even when the desktop app is installed (env CVIZ_OPEN_IN=browser)."),
     changes: Optional[str] = typer.Option(
         None, "--changes", "-c", metavar="BRANCH",
         help="Open the Changes view: what the current state adds or modifies against BRANCH, and who is impacted.",
@@ -1665,6 +1666,7 @@ def graph(
         port=port,
         watch_path=watch_path,
         open_browser=not no_browser,
+        browser_only=browser,
         use_polling=poll or None,
         full_resync_hours=full_resync_hours,
         changes=changes,

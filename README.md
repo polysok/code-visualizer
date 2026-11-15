@@ -49,10 +49,13 @@ gives AI coding agents the same graph.
 | Zed | Task, installed by `cviz ide zed <repo>` (`extensions/zed/`) | *CViz: open in dependency graph* |
 
 When the app runs, it comes forward on the repository's tab (opened, and
-indexed, if needed), centred on the artifact under the cursor; otherwise the
-graph page opens in the browser. VS Code: setting `cviz.graphOpenIn`
-(`browser` to always use the browser); `cviz-open`: `--browser` or
-`CVIZ_OPEN_IN=browser`. The JetBrains and Zed extensions run `cviz-open`:
+indexed, if needed), centred on the artifact under the cursor; installed but
+not running (macOS), it is started first; otherwise the graph page opens in
+the browser. `cviz graph` in a terminal does the same once its server
+answers: the app's tab shows that server (`--no-browser` shows nothing; a
+review, `--changes`, opens in the browser). VS Code: setting
+`cviz.graphOpenIn` (`browser` to always use the browser); `cviz-open` and
+`cviz graph`: `--browser` or `CVIZ_OPEN_IN=browser`. The JetBrains and Zed extensions run `cviz-open`:
 they need the command line below.
 
 ### The MCP server
@@ -100,8 +103,9 @@ makes it open the database instead).
 
 - **IDE links**: `cviz-open FILE:LINE` / `cviz open` open an artifact in the
   desktop app when it runs (it records a loopback URL and a token in
-  `~/.code-visualizer/desktop.json`), else in an open graph page, else in a
-  new browser tab; nodes open the code in VS Code, Cursor, Rider, IntelliJ or
+  `~/.code-visualizer/desktop.json`) or is installed (macOS: `open -b
+  com.polysok.code-visualizer`), else in an open graph page, else in a new
+  browser tab; nodes open the code in VS Code, Cursor, Rider, IntelliJ or
   Zed.
 - **Live updates**: the watcher pushes changes to open pages over SSE, catches
   up on start-up with files changed while it was not running, re-links calls
