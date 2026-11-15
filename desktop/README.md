@@ -52,6 +52,11 @@ network; `cviz` downloads there the grammars of other languages.
 
 `CVIZ_DESKTOP_CVIZ=/path/to/cviz` makes the app use another `cviz`.
 
-The builds are not signed: macOS asks to allow the app once (System
-Settings › Privacy & Security › *Open Anyway*), Windows shows a SmartScreen
-warning (*More info* › *Run anyway*).
+The builds are not signed with an Apple or Microsoft certificate. On macOS
+the app is signed ad hoc (`signingIdentity: "-"` in `tauri.conf.json`), so
+the first launch says Apple cannot verify it: allow it once in System
+Settings › Privacy & Security › *Open Anyway*. A build without that
+signature is reported as "damaged"; `xattr -dr com.apple.quarantine "/Applications/Code Visualizer.app"` lets it open. The hardened
+runtime is off: under it, the ad hoc signed `cviz` cannot load the Python
+library it unpacks. Windows shows a SmartScreen warning (*More info* ›
+*Run anyway*).

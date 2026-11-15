@@ -36,6 +36,10 @@
     ],
     "resources": {
       "grammars/": "grammars/"
+    },
+    "macOS": {
+      "signingIdentity": "-",
+      "hardenedRuntime": false
     }
   }
 }

@@ -142,9 +142,11 @@ Each [release](https://github.com/polysok/code-visualizer/releases) has:
 
 **The app**: download the `.dmg` (macOS), the `-setup.exe` (Windows) or
 the `.deb` / `.AppImage` (Linux) and install it; then the extension of your
-IDE. The builds are not signed: macOS asks once to allow the app (*System
-Settings › Privacy & Security › Open Anyway*), Windows shows a SmartScreen
-warning (*More info › Run anyway*).
+IDE. The builds are not signed with an Apple or Microsoft certificate:
+macOS says on first launch that it cannot verify the app, allow it once in
+*System Settings › Privacy & Security › Open Anyway* (if macOS says the app
+is "damaged", run `xattr -dr com.apple.quarantine "/Applications/Code Visualizer.app"`); Windows shows a SmartScreen warning (*More info ›
+Run anyway*).
 
 **The command line** (`cviz`, `cviz-open`; package `code-visualizer`, not
 on PyPI), for the JetBrains and Zed extensions, the MCP server, a terminal or
