@@ -284,8 +284,9 @@ class MCPServer:
         os.write(fd, str(os.getpid()).encode())
         os.close(fd)
 
-        command = [sys.executable, "-m", "code_visualizer.cli.main", "graph",
-                   "--watch", str(root), "--no-browser"]
+        from .utils.self_launch import cviz_argv, detached_env
+
+        command = cviz_argv("graph", "--watch", str(root), "--no-browser")
         log = open(self._graph_log(), "ab")
         kwargs: Dict[str, Any] = {}
         if os.name == "nt":
@@ -294,7 +295,8 @@ class MCPServer:
             kwargs["start_new_session"] = True  # outlives this MCP server, shared with the page
         try:
             process = subprocess.Popen(command, cwd=str(root), stdin=subprocess.DEVNULL,
-                                       stdout=log, stderr=subprocess.STDOUT, **kwargs)
+                                       stdout=log, stderr=subprocess.STDOUT, env=detached_env(),
+                                       **kwargs)
         finally:
             log.close()
         print(f"Started the graph server of {root} (log: {self._graph_log()})", file=sys.stderr, flush=True)

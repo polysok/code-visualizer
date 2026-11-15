@@ -129,7 +129,9 @@ def _cviz_command() -> List[str]:
     exe = shutil.which("cviz")
     if exe:
         return [exe]
-    return [sys.executable, "-m", "code_visualizer"]
+    from ..utils.self_launch import cviz_argv
+
+    return cviz_argv()
 
 
 def start_server(repo_root: Path, timeout: float = 120.0) -> Optional[str]:
@@ -141,8 +143,10 @@ def start_server(repo_root: Path, timeout: float = 120.0) -> Optional[str]:
     from . import server_registry
 
     cmd = _cviz_command() + ["graph", "--no-browser", "--watch", str(repo_root)]
+    from ..utils.self_launch import detached_env
+
     kwargs = dict(stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                  cwd=str(repo_root))
+                  cwd=str(repo_root), env=detached_env())
     if os.name == "nt":
         kwargs["creationflags"] = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(
             subprocess, "CREATE_NEW_PROCESS_GROUP", 0)

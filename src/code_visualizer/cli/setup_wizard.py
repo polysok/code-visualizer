@@ -565,6 +565,9 @@ def configure_mcp_client():
         }
     }
 
+    elif getattr(sys, "frozen", False):  # the single-file binary, not on PATH
+        command = sys.executable
+        args = ["mcp", "start"]
     console.print("\n[bold green]Configuration generated![/bold green]")
     console.print("Copy the following JSON and add it to your MCP server configuration file:")
     console.print(json.dumps(mcp_config, indent=2))
