@@ -20,7 +20,8 @@ you edit.
 
 **IDE extensions complete it**, linking the graph to the code in both
 directions: from the editor, open the artifact under the cursor in the graph;
-from any node of the graph, jump back to its code in the IDE.
+from any node of the graph, jump back to its code in the IDE. An **MCP server**
+gives AI coding agents the same graph.
 
 ### The desktop app
 
@@ -53,6 +54,47 @@ graph page opens in the browser. VS Code: setting `cviz.graphOpenIn`
 (`browser` to always use the browser); `cviz-open`: `--browser` or
 `CVIZ_OPEN_IN=browser`. The JetBrains and Zed extensions run `cviz-open`:
 they need the command line below.
+
+### The MCP server
+
+`cviz mcp start` is an MCP server that gives an AI coding agent five
+read-only tools on the graph: `graph_overview`, `search_code`,
+`traverse_graph` (callers, callees, inheritance, imports), `read_code` and
+`execute_cypher_query`. It needs the command line (below). To configure an
+agent:
+
+```bash
+# pick it from the list (Claude Code, Claude Desktop, Cursor, VS Code, Windsurf,
+# Zed, Gemini CLI, Codex, Cline, JetBrains AI...): its MCP configuration is written
+cviz mcp setup
+
+# or by hand, Claude Code
+claude mcp add code-visualizer -- cviz mcp start
+```
+
+Any other agent: `{"mcpServers": {"code-visualizer": {"command": "cviz",
+"args": ["mcp", "start"]}}}` in its MCP configuration. `cviz mcp tools` lists
+the tools.
+
+**Which repository.** In this order:
+
+1. `--repo <path>` (or the `CVIZ_REPO` variable): that repository, always.
+   For a client without project folders, such as Claude Desktop (`cviz mcp
+   setup` asks for it): `"args": ["mcp", "start", "--repo", "/path/to/repo"]`.
+2. Else the first project folder the client announces (MCP *roots*, sent by
+   VS Code, Cursor and other clients), followed when it changes.
+3. Else the folder the client starts the server in (Claude Code, Codex,
+   Gemini CLI: the folder they were started from).
+
+The repository is the nearest folder with a `.code-visualizer/`, else the git
+root. One server works on one repository at a time: for another one, start
+the agent there (or use another `--repo`).
+
+The MCP server never opens the database itself: it goes through the
+repository's graph server (the one the app or `cviz graph` runs), so the
+agent and the graph share one index, and starts one in the background when
+none runs (indexing the repository the first time; `CVIZ_MCP_START_GRAPH=0`
+makes it open the database instead).
 
 ## Under the hood
 
@@ -105,8 +147,8 @@ Settings › Privacy & Security › Open Anyway*), Windows shows a SmartScreen
 warning (*More info › Run anyway*).
 
 **The command line** (`cviz`, `cviz-open`; package `code-visualizer`, not
-on PyPI), for the JetBrains and Zed
-extensions, a terminal or a remote machine; from the folder of the
+on PyPI), for the JetBrains and Zed extensions, the MCP server, a terminal or
+a remote machine; from the folder of the
 repository to look at:
 
 ```bash
