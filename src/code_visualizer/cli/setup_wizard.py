@@ -247,6 +247,25 @@ def _configure_goose(mcp_config):
     except Exception as e:
         console.print(f"[red]Failed to update Goose configuration: {e}[/red]")
 
+def _pin_repository(mcp_config):
+    """The configuration with ``--repo <path>``, asked for: a client without
+    project folders (Claude Desktop) starts the server outside any repository."""
+    answer = prompt([{
+        "type": "input",
+        "name": "repo",
+        "message": "Repository the agent works on (Claude Desktop has no project folder):",
+        "default": str(Path.cwd()),
+    }])
+    repo = Path((answer or {}).get("repo") or "").expanduser()
+    if not repo.is_dir():
+        console.print(f"[red]{repo} is not a folder: nothing configured.[/red]")
+        return None
+    pinned = json.loads(json.dumps(mcp_config))
+    server = pinned["mcpServers"][MCP_SERVER_KEY]
+    server["args"] = list(server["args"]) + ["--repo", str(repo.resolve())]
+    return pinned
+
+
 def _configure_ide(mcp_config):
     """Asks user for their IDE and configures it automatically."""
     questions = [
@@ -266,7 +285,7 @@ def _configure_ide(mcp_config):
         {
             "type": "list",
             "message": "Choose your IDE/CLI to configure:",
-            "choices": ["VS Code", "Cursor", "Windsurf", "Zed", "Claude code", "Gemini CLI", "ChatGPT Codex", "Cline", "RooCode", "Amazon Q Developer", "JetBrainsAI", "Aider", "Kiro", "Goose", "Antigravity", "OpenCode", "None of the above"],
+            "choices": ["VS Code", "Cursor", "Windsurf", "Zed", "Claude code", "Claude Desktop", "Gemini CLI", "ChatGPT Codex", "Cline", "RooCode", "Amazon Q Developer", "JetBrainsAI", "Aider", "Kiro", "Goose", "Antigravity", "OpenCode", "None of the above"],
             "name": "ide_choice",
         }
     ]
@@ -285,8 +304,13 @@ def _configure_ide(mcp_config):
         )
         return
 
-    if ide_choice in ["VS Code", "Cursor", "Windsurf", "Zed", "Claude code", "Gemini CLI", "ChatGPT Codex", "Cline", "RooCode", "Amazon Q Developer", "JetBrainsAI", "Aider", "Kiro", "Goose", "Antigravity"]:
+    if ide_choice in ["VS Code", "Cursor", "Windsurf", "Zed", "Claude code", "Claude Desktop", "Gemini CLI", "ChatGPT Codex", "Cline", "RooCode", "Amazon Q Developer", "JetBrainsAI", "Aider", "Kiro", "Goose", "Antigravity"]:
         console.print(f"\n[bold cyan]Configuring for {ide_choice}...[/bold cyan]")
+
+        if ide_choice == "Claude Desktop":
+            mcp_config = _pin_repository(mcp_config)
+            if mcp_config is None:
+                return
 
         if ide_choice == "Amazon Q Developer":
             convert_mcp_json_to_yaml()
@@ -322,6 +346,11 @@ def _configure_ide(mcp_config):
             ],
             "Claude code": [
                 Path.home() / ".claude.json"
+            ],
+            "Claude Desktop": [
+                Path.home() / "Library" / "Application Support" / "Claude" / "claude_desktop_config.json",
+                Path.home() / "AppData" / "Roaming" / "Claude" / "claude_desktop_config.json",
+                Path.home() / ".config" / "Claude" / "claude_desktop_config.json",
             ],
             "Gemini CLI": [
                 Path.home() / ".gemini" / "settings.json"
@@ -536,6 +565,9 @@ def configure_mcp_client():
     if cviz_path:
         command = cviz_path
         args = ["mcp", "start"]
+    elif getattr(sys, "frozen", False):  # the single-file binary, not on PATH
+        command = sys.executable
+        args = ["mcp", "start"]
     elif pipx_path:
         command = pipx_path
         args = ["run", "code_visualizer", "mcp", "start"]
@@ -565,9 +597,6 @@ def configure_mcp_client():
         }
     }
 
-    elif getattr(sys, "frozen", False):  # the single-file binary, not on PATH
-        command = sys.executable
-        args = ["mcp", "start"]
     console.print("\n[bold green]Configuration generated![/bold green]")
     console.print("Copy the following JSON and add it to your MCP server configuration file:")
     console.print(json.dumps(mcp_config, indent=2))

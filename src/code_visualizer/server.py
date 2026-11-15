@@ -18,6 +18,8 @@ from .tools.code_finder import CodeFinder
 from .utils.debug_log import error_logger, warning_logger, debug_logger
 from .cli.config_manager import (
     MCP_SERVER_KEY,
+    NotInAProjectError,
+    find_repo_root,
     resolve_context,
 )
 
@@ -196,14 +198,22 @@ class MCPServer:
     # first indexing of a repository).
     GRAPH_START_TIMEOUT = 120.0
 
-    def __init__(self, loop=None, cwd: Path | None = None):
+    def __init__(self, loop=None, cwd: Path | None = None, pinned: bool = False):
+        """*cwd*: a folder of the repository to work on (default: the current
+        one). *pinned* (``cviz mcp start --repo``): keep it, whatever folders
+        the client announces (MCP roots)."""
         self.cwd = (cwd or Path.cwd()).resolve()
+        self.pinned = pinned
         self.disabled_tools: Set[str] = set()
         self.proxy_url: Optional[str] = None
         self.db_manager = None
         self.graph_builder = None
         self.code_finder = None
         self._search_engine = None
+        self._graph_process = None
+        self.resolved_context = None
+        self.unbound_reason: Optional[str] = None
+        self._client_roots = False
         self.job_manager = JobManager()
 
         if loop is None:
@@ -215,14 +225,34 @@ class MCPServer:
         self.loop = loop
 
         try:
-            ctx = resolve_context(cwd=self.cwd)
+            self._bind(self.cwd)
+        except NotInAProjectError as exc:
+            if pinned:
+                raise
+            # Started outside any project (Claude Desktop starts its servers in
+            # the home folder): wait for the client's roots (_on_roots).
+            self.unbound_reason = (
+                f"{exc} The MCP client announced no project folder (MCP roots): start the "
+                "server with --repo <path> (cviz mcp start --repo <path>), or from the repository."
+            )
+        self._init_tools()
+
+    def _bind(self, cwd: Path) -> None:
+        """Work on the repository containing *cwd*, through its graph server."""
+        try:
+            ctx = resolve_context(cwd=cwd)
+        except NotInAProjectError:
+            raise
         except ValueError as e:
             raise ValueError(f"Database configuration error: {e}")
+        self.cwd = cwd.resolve()
         self.resolved_context = ctx
+        self.unbound_reason = None
         if ctx.database and not os.environ.get('CVIZ_RUNTIME_DB_TYPE'):
             os.environ['CVIZ_RUNTIME_DB_TYPE'] = ctx.database
 
         self._graph_process = None
+        self._starting = False
         running = self._graph_server_url()
         if running:
             # cviz graph holds the database: go through it.
@@ -244,12 +274,57 @@ class MCPServer:
                 self.db_manager = None
                 self.proxy_url = running
         if self.db_manager is not None:
-            self.graph_builder = GraphBuilder(self.db_manager, self.job_manager, loop)
+            self.graph_builder = GraphBuilder(self.db_manager, self.job_manager, self.loop)
             self.code_finder = CodeFinder(self.db_manager)
 
-        self._init_tools()
+    def _release(self) -> None:
+        """Let go of the current repository (its graph server keeps running)."""
+        if self.db_manager is not None:
+            _teardown_db_manager(self.db_manager)
+        self.db_manager = self.graph_builder = self.code_finder = self._search_engine = None
+        self.proxy_url, self._graph_process, self._starting = None, None, False
+
+    def _on_roots(self, roots: Any) -> None:
+        """The client's workspace folders (MCP ``roots/list``): work on the
+        repository of the first one that is a project. Ignored when pinned."""
+        if self.pinned or not isinstance(roots, list):
+            return
+        from urllib.parse import unquote, urlparse
+
+        for root in roots:
+            uri = root.get("uri") if isinstance(root, dict) else None
+            parsed = urlparse(uri or "")
+            if parsed.scheme != "file":
+                continue
+            path = unquote(parsed.path)
+            if os.name == "nt" and len(path) > 2 and path[0] == "/" and path[2] == ":":
+                path = path[1:]  # file:///C:/x -> C:/x
+            folder = Path(path)
+            if not folder.is_dir():
+                continue
+            current = getattr(self.resolved_context, "repo_root", None)
+            if current and find_repo_root(folder).resolve() == Path(current).resolve():
+                return  # already there
+            previous = (self.resolved_context, self.cwd)
+            try:
+                self._release()
+                self._bind(folder)
+            except NotInAProjectError:
+                continue
+            except Exception as exc:  # noqa: BLE001 - keep serving the previous one
+                warning_logger(f"MCP roots: cannot use {folder}: {exc}")
+                if previous[0] is not None:
+                    try:
+                        self._bind(previous[1])
+                    except Exception:  # noqa: BLE001
+                        pass
+                continue
+            print(f"Working on {self._repo_root()} (from the client's roots)", file=sys.stderr, flush=True)
+            self._init_tools()
+            return
 
     _starting = False
+    _ROOTS_REQUEST = "cviz-roots"
 
     def _repo_root(self) -> Path:
         return Path(getattr(self.resolved_context, "repo_root", "") or self.cwd)
@@ -495,6 +570,10 @@ class MCPServer:
             "list_indexed_repositories": self.list_indexed_repositories_tool,
             "add_code_to_graph": self.add_code_to_graph_tool,
         }
+        if tool_name not in internal and tool_name not in TOOLS:
+            return {"error": f"Unknown tool: {tool_name}. Tools: {', '.join(TOOLS)}."}
+        if getattr(self, "resolved_context", True) is None:
+            return {"error": self.unbound_reason or "No repository to work on."}
         if tool_name in internal:
             if "repo_path" in (args or {}) and "path" not in args:
                 args = {**args, "path": args["repo_path"]}
@@ -554,6 +633,13 @@ class MCPServer:
                     break
                 
                 request = json.loads(line.strip())
+                if not isinstance(request, dict):
+                    raise ValueError("a JSON-RPC message is an object")
+                if 'method' not in request and request.get('id') is not None:
+                    # A response to one of our requests (roots/list).
+                    if request.get('id') == self._ROOTS_REQUEST and isinstance(request.get('result'), dict):
+                        await asyncio.to_thread(self._on_roots, request['result'].get('roots'))
+                    continue
                 method = request.get('method')
                 params = request.get('params', {})
                 request_id = request.get('id')
@@ -562,6 +648,8 @@ class MCPServer:
                 response = {}
                 # Route the request based on the JSON-RPC method.
                 if method == 'initialize':
+                    caps = params.get('capabilities') if isinstance(params, dict) else None
+                    self._client_roots = isinstance(caps, dict) and caps.get('roots') is not None
                     # Build system prompt with custom prompts if any
                     system_prompt = build_system_prompt()
                     
@@ -603,9 +691,12 @@ class MCPServer:
                             "jsonrpc": "2.0", "id": request_id,
                             "result": {"content": [{"type": "text", "text": response_text}]}
                         }
-                elif method == 'notifications/initialized':
-                    # This is a notification, no response needed.
-                    pass
+                elif method in ('notifications/initialized', 'notifications/roots/list_changed'):
+                    # Ask for the client's workspace folders: they name the
+                    # repository better than the folder we were started in.
+                    if self._client_roots and not self.pinned:
+                        print(json.dumps({"jsonrpc": "2.0", "id": self._ROOTS_REQUEST,
+                                          "method": "roots/list"}), flush=True)
                 else:
                     # Handle unknown methods.
                     if request_id is not None:

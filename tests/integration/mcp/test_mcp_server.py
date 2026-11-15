@@ -173,3 +173,73 @@ def test_a_second_mcp_server_waits_for_the_one_starting_the_graph_server(monkeyp
     second = MCPServer(cwd=tmp_path)
     assert len(spawned) == 1 and spawned[0][-3:] == ["--watch", str(first._repo_root()), "--no-browser"]
     assert second._graph_process is None
+
+
+@pytest.fixture
+def two_repos(monkeypatch, tmp_path):
+    """Repositories a/ and b/; the graph server is "started" without a process."""
+    monkeypatch.setenv("CVIZ_MCP_START_GRAPH", "1")
+    monkeypatch.setattr(MCPServer, "_graph_server_url", lambda self: None)
+    monkeypatch.setattr(MCPServer, "_start_graph_server", lambda self: _FakeProcess())
+    for name in ("a", "b"):
+        (tmp_path / name / ".git").mkdir(parents=True)
+    return tmp_path / "a", tmp_path / "b"
+
+
+def _roots(*folders):
+    return [{"uri": folder.resolve().as_uri(), "name": folder.name} for folder in folders]
+
+
+def test_the_client_roots_choose_the_repository(two_repos):
+    a, b = two_repos
+    server = MCPServer(cwd=a)
+    assert server._repo_root() == a.resolve()
+    server._on_roots([{"uri": "https://example.com/x"}] + _roots(b))
+    assert server._repo_root() == b.resolve()
+
+
+def test_started_outside_a_project_it_waits_for_the_roots(two_repos, monkeypatch, tmp_path):
+    """Claude Desktop starts its servers in the home folder."""
+    a, _b = two_repos
+    from code_visualizer.cli import config_manager
+
+    home = tmp_path / "home"
+    (home / ".code-visualizer").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setattr(config_manager, "CONFIG_DIR", home / ".code-visualizer")
+    monkeypatch.delenv("CVIZ_RUNTIME_DB_PATH", raising=False)
+    server = MCPServer(cwd=home)
+    result = asyncio.run(server.handle_tool_call("graph_overview", {}))
+    assert "--repo" in result["error"]
+    server._on_roots(_roots(a))
+    assert server._repo_root() == a.resolve() and server.unbound_reason is None
+
+
+def test_a_pinned_repository_ignores_the_roots(two_repos):
+    a, b = two_repos
+    server = MCPServer(cwd=a, pinned=True)
+    server._on_roots(_roots(b))
+    assert server._repo_root() == a.resolve()
+
+
+def test_roots_are_asked_for_after_the_handshake(two_repos, monkeypatch, capsys):
+    a, b = two_repos
+    server = MCPServer(cwd=a)
+    messages = [
+        {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+         "params": {"protocolVersion": "2025-03-26", "capabilities": {"roots": {"listChanged": True}},
+                    "clientInfo": {"name": "t", "version": "1"}}},
+        {"jsonrpc": "2.0", "method": "notifications/initialized"},
+        {"jsonrpc": "2.0", "id": "cviz-roots", "result": {"roots": _roots(b)}},
+    ]
+    monkeypatch.setattr(sys, "stdin", io.StringIO("".join(json.dumps(m) + "\n" for m in messages)))
+
+    async def run():
+        await server._run_loop(asyncio.get_running_loop())
+
+    asyncio.run(run())
+    sent = [json.loads(line) for line in capsys.readouterr().out.strip().splitlines()]
+    assert {"jsonrpc": "2.0", "id": "cviz-roots", "method": "roots/list"} in sent
+    assert all(m.get("id") != "cviz-roots" or "error" not in m for m in sent)  # no reply to a reply
+    assert server._repo_root() == b.resolve()

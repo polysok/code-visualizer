@@ -132,21 +132,37 @@ def mcp_setup():
     configure_mcp_client()
 
 @mcp_app.command("start")
-def mcp_start():
+def mcp_start(
+    repo: Optional[str] = typer.Option(
+        None, "--repo", "-r", envvar="CVIZ_REPO",
+        help="Repository to work on, whatever the folder the client starts the server in "
+             "or announces (default: the client's project folder, else the current folder).",
+    ),
+):
     """
     Start the Code Visualizer MCP server.
-    
+
     Starts the server which listens for JSON-RPC requests from stdin.
     This is used by IDE integrations (VS Code, Cursor, Zed, etc.).
+
+    The repository: --repo (or CVIZ_REPO), else the first project folder the
+    client announces (MCP roots), else the folder the server is started in.
     """
     console.print("[bold green]Starting Code Visualizer Server...[/bold green]")
     _load_credentials()
+
+    pinned = None
+    if repo:
+        pinned = Path(repo).expanduser().resolve()
+        if not pinned.is_dir():
+            console.print(f"[bold red]--repo:[/bold red] {pinned} is not a folder.")
+            raise typer.Exit(code=1)
 
     server = None
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
-        server = MCPServer(loop=loop, cwd=Path.cwd())
+        server = MCPServer(loop=loop, cwd=pinned or Path.cwd(), pinned=pinned is not None)
         loop.run_until_complete(server.run())
     except ValueError as e:
         # This typically happens if credentials are still not found after all checks.
@@ -307,6 +323,11 @@ def _load_credentials(cli_context_flag: Optional[str] = None):
     # IMPORTANT: DB-selection keys set in the shell must win over .env defaults.
     # E.g. a DEFAULT_DATABASE given on the command line must not be overridden
     # by the one sitting in ~/.code-visualizer/.env
+    # The AI search settings stay in the file: the graph page changes them while
+    # the servers run (one per repository), and the environment would win over
+    # the file and keep the start-up values.
+    from code_visualizer.semantic.settings import DEFAULTS as AI_SETTINGS
+
     for key, value in merged_config.items():
         if value is not None:  # Only set non-None values
             if key in runtime_env or key in AI_SETTINGS:
@@ -323,11 +344,6 @@ def _load_credentials(cli_context_flag: Optional[str] = None):
             console.print(f"[dim]Loaded configuration from: {', '.join(config_source_names)}[/dim]")
     else:
         console.print("[yellow]No configuration file found. Using defaults.[/yellow]")
-    # The AI search settings stay in the file: the graph page changes them while
-    # the servers run (one per repository), and the environment would win over
-    # the file and keep the start-up values.
-    from code_visualizer.semantic.settings import DEFAULTS as AI_SETTINGS
-
 
     default_db_sources = list(key_defined_in.get("DEFAULT_DATABASE", []))
     if "DEFAULT_DATABASE" in runtime_env:
