@@ -67,12 +67,12 @@ body { display: flex; flex-direction: column; background: var(--bg); color: var(
 .btn:hover { border-color: var(--accent); color: var(--accent); }
 .btn.primary { color: var(--accent); }
 
-.starting { position: absolute; inset: 0; display: flex; flex-direction: column; gap: 10px; padding: 24px; }
-.starting h2 { margin: 0; font-size: 14px; font-weight: 600; }
-.starting .what { color: var(--muted); margin: 0; }
-.starting pre { flex: 1; min-height: 0; margin: 0; padding: 10px 12px; overflow: auto; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--muted); font: 12px/1.5 var(--font); white-space: pre-wrap; }
-.starting.error h2 { color: var(--danger); }
-.starting .actions { display: flex; gap: 8px; }
+.opening { position: absolute; inset: 0; display: flex; flex-direction: column; gap: 10px; padding: 24px; }
+.opening h2 { margin: 0; font-size: 14px; font-weight: 600; }
+.opening .what { color: var(--muted); margin: 0; }
+.opening pre { flex: 1; min-height: 0; margin: 0; padding: 10px 12px; overflow: auto; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--muted); font: 12px/1.5 var(--font); white-space: pre-wrap; }
+.opening.error h2 { color: var(--danger); }
+.opening .actions { display: flex; gap: 8px; }
 .progress { display: flex; flex-direction: column; gap: 6px; padding: 12px 14px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
 .progress .phase { font-weight: 600; }
 .progress .bar { height: 6px; border-radius: 3px; background: color-mix(in srgb, var(--accent) 15%, transparent); overflow: hidden; }

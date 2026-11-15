@@ -73,7 +73,7 @@
     }
     t.view.innerHTML = "";
     const box = document.createElement("div");
-    box.className = `starting${t.state === "error" ? " error" : ""}`;
+    box.className = `opening${t.state === "error" ? " error" : ""}`;
     const h = document.createElement("h2");
     h.textContent = t.state === "error" ? `${t.name}: the graph server did not start` : `Opening ${t.name}…`;
     const what = document.createElement("p");
