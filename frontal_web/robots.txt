@@ -1,0 +1,6 @@
+# Search engines and AI assistants are welcome.
+User-agent: *
+Allow: /
+
+# Once the site has its domain:
+# Sitemap: https://DOMAIN/sitemap.xml

@@ -1,0 +1,752 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<title>Code Visualizer: free call graph app for VS Code, Rider, Zed</title>
+<meta name="description" content="Free, open-source desktop app that shows your code's call graph (callers, callees, inheritance), linked to VS Code, Cursor, Rider and Zed. 100% local.">
+<meta name="author" content="Poly Sok">
+<meta name="robots" content="index, follow, max-image-preview:large">
+<meta name="theme-color" content="#0e1014" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#fbfbfc" media="(prefers-color-scheme: light)">
+<!-- Once the site has its domain: <link rel="canonical" href="https://DOMAIN/">, and absolute URLs for og:url / og:image. -->
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Code Visualizer">
+<meta property="og:title" content="Code Visualizer: your code's call graph, linked to your IDE">
+<meta property="og:description" content="Free, open-source desktop app that shows your code's call graph (callers, callees, inheritance), linked to VS Code, Cursor, Rider and Zed. 100% local.">
+<meta property="og:image" content="images/og-image.jpg">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="753">
+<meta property="og:image:alt" content="Code Visualizer: the call graph of a function, its callees around it, and its source code in the side panel">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Code Visualizer: your code's call graph, linked to your IDE">
+<meta name="twitter:description" content="Free, open-source desktop app that shows your code's call graph (callers, callees, inheritance), linked to VS Code, Cursor, Rider and Zed. 100% local.">
+<meta name="twitter:image" content="images/og-image.jpg">
+<script type="application/ld+json">
+[
+ {
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "Code Visualizer",
+  "alternateName": "code-visualizer",
+  "description": "Free, open-source desktop app that shows your code's call graph (callers, callees, inheritance), linked to VS Code, Cursor, Rider and Zed. 100% local.",
+  "applicationCategory": "DeveloperApplication",
+  "operatingSystem": "macOS, Windows, Linux",
+  "offers": {
+   "@type": "Offer",
+   "price": "0",
+   "priceCurrency": "USD"
+  },
+  "license": "https://opensource.org/licenses/MIT",
+  "isAccessibleForFree": true,
+  "downloadUrl": "https://github.com/polysok/code-visualizer/releases/latest",
+  "codeRepository": "https://github.com/polysok/code-visualizer",
+  "screenshot": ["images/dark-theme-1600.jpg", "images/semantic-search-1600.jpg", "images/code-diff-1600.jpg"],
+  "featureList": [
+   "Call graph: callers, callees and inheritance",
+   "IDE integration: VS Code, Cursor, JetBrains, Zed",
+   "Changes view against a target branch",
+   "Live updates while editing",
+   "Natural-language code search, local embedding model",
+   "One tab per repository"
+  ],
+  "programmingLanguage": [
+   "Python",
+   "JavaScript",
+   "TypeScript (TSX)",
+   "Java",
+   "C#",
+   "C",
+   "C++",
+   "Go",
+   "Rust",
+   "Swift",
+   "Kotlin",
+   "Scala",
+   "PHP",
+   "Ruby",
+   "Dart",
+   "Elixir",
+   "Haskell",
+   "Lua",
+   "Perl",
+   "Solidity",
+   "Vue",
+   "Svelte",
+   "HTML",
+   "CSS",
+   "HCL (Terraform)",
+   "Emacs Lisp"
+  ],
+  "author": {
+   "@type": "Person",
+   "name": "Poly Sok",
+   "sameAs": [
+    "https://www.linkedin.com/in/poly-sok/",
+    "https://github.com/polysok"
+   ]
+  },
+  "isBasedOn": "https://github.com/CodeGraphContext/CodeGraphContext"
+ },
+ {
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  "mainEntity": [
+   {
+    "@type": "Question",
+    "name": "What is Code Visualizer?",
+    "acceptedAnswer": {
+     "@type": "Answer",
+     "text": "Code Visualizer is a free, open-source desktop app for macOS, Windows and Linux that shows the dependency graph of a code repository: the callers, callees and inheritance of any function, class or file. IDE extensions link the graph to the code in both directions."
+    }
+   },
+   {
+    "@type": "Question",
+    "name": "Is Code Visualizer free?",
+    "acceptedAnswer": {
+     "@type": "Answer",
+     "text": "Yes. It is open source under the MIT License, with no account, no subscription and no server to run."
+    }
+   },
+   {
+    "@type": "Question",
+    "name": "Which programming languages does it support?",
+    "acceptedAnswer": {
+     "@type": "Answer",
+     "text": "Python, JavaScript, TypeScript (TSX), Java, C#, C, C++, Go, Rust, Swift, Kotlin, Scala, PHP, Ruby, Dart, Elixir, Haskell, Lua, Perl, Solidity, Vue, Svelte, HTML, CSS, HCL (Terraform) and Emacs Lisp. In C#, Rust, TypeScript and Swift, method calls are also resolved through the receiver's declared type."
+    }
+   },
+   {
+    "@type": "Question",
+    "name": "Does my code leave my machine?",
+    "acceptedAnswer": {
+     "@type": "Answer",
+     "text": "No. Indexing, the graph database (LadybugDB, embedded) and the embedding model used by the search all run locally. The LLM that re-ranks search results is optional and set up by default for a local Ollama or LM Studio."
+    }
+   },
+   {
+    "@type": "Question",
+    "name": "Which IDEs work with it?",
+    "acceptedAnswer": {
+     "@type": "Answer",
+     "text": "VS Code and Cursor (a .vsix extension), Rider, IntelliJ and the other JetBrains IDEs (an External Tool) and Zed (a task). From the editor, the symbol under the cursor opens in the app; from the graph, a node opens its code in the IDE."
+    }
+   },
+   {
+    "@type": "Question",
+    "name": "Does it handle large repositories?",
+    "acceptedAnswer": {
+     "@type": "Answer",
+     "text": "Yes. The first index runs in two stages: the graph opens once the first 1,000 files are indexed (code before tests and generated files) and the rest is indexed in the background. The graph then stays up to date as you edit."
+    }
+   },
+   {
+    "@type": "Question",
+    "name": "How is it different from a text search?",
+    "acceptedAnswer": {
+     "@type": "Answer",
+     "text": "A text search finds names. Code Visualizer follows the calls and inheritance it resolved when indexing, so a call on a standard-library object such as a Mutex or a Map does not link to a same-named method of your project, and the Changes view shows what a branch added, modified, moved, renamed or deleted."
+    }
+   }
+  ]
+ }
+]
+</script>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='9' fill='%238b86f0'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap">
+<style>
+html{scroll-behavior:smooth}
+@media (prefers-reduced-motion: reduce){html{scroll-behavior:auto}}
+
+:root{color-scheme:dark light;--bg:#0e1014;--bg-code:#0e1014;--surface:#151821;--row-hover:#12151c;--tab-on:#1b1f2b;--border-soft:#1d212b;--border:#262b36;--border-strong:#343a48;--border-hover:#5a6175;--fg:#e6e8ee;--fg-2:#b4bac8;--muted:#9aa1b2;--accent:#a5a0ff;--accent-hover:#bdb9ff;--on-accent:#0e1014;--teal:#6fcfb4;--g-edge:#6b7388;--g-node:#6fcfb4;--g-center:#8b86f0;--g-halo:rgba(139,134,240,0.28)}
+@media (prefers-color-scheme: light){:root{--bg:#fbfbfc;--bg-code:#ffffff;--surface:#f1f2f6;--row-hover:#f5f6f9;--tab-on:#e8e9f4;--border-soft:#e4e6ec;--border:#dcdfe6;--border-strong:#c5c9d4;--border-hover:#9aa0b0;--fg:#14161b;--fg-2:#434958;--muted:#596070;--accent:#4b43d6;--accent-hover:#3a33b8;--on-accent:#ffffff;--teal:#12806a;--g-edge:#9aa0b0;--g-node:#2f8a77;--g-center:#5b4fe0;--g-halo:rgba(91,79,224,0.2)}}
+@media (max-width:640px){.glabel{display:none}}
+button:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:6px}
+body{margin:0;background:var(--bg)}
+a{color:var(--accent);text-decoration:none}
+a:hover{text-decoration:underline}
+.btn-primary{background:var(--accent);color:var(--on-accent);border:1px solid var(--accent)}
+.btn-primary:hover{background:var(--accent-hover);text-decoration:none}
+.btn-ghost{background:transparent;color:var(--fg);border:1px solid var(--border-strong)}
+.btn-ghost:hover{border-color:var(--accent);text-decoration:none}
+.navlink{color:var(--muted)}
+.navlink:hover{color:var(--fg);text-decoration:none}
+.tab{cursor:pointer;font-family:'JetBrains Mono',monospace;font-size:13px;padding:10px 16px;min-height:44px;border-radius:6px;border:1px solid var(--border-strong);background:transparent;color:var(--muted)}
+.tab:hover{color:var(--fg);border-color:var(--border-hover)}
+.tab-on{background:var(--tab-on);color:var(--fg);border-color:var(--accent)}
+.row:hover{background:var(--row-hover)}
+.ico{width:1em;height:1em;fill:currentColor;flex:none}
+.with-ico{display:inline-flex;align-items:center;gap:8px}
+.shots{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:16px}
+.shot{display:flex;flex-direction:column;gap:8px;color:var(--muted);font-size:13px}
+.shot:hover{text-decoration:none;color:var(--fg)}
+.shot img{display:block;width:100%;height:auto;border:1px solid var(--border);border-radius:8px;transition:border-color .15s}
+.shot:hover img{border-color:var(--accent)}
+#shotView{padding:0;border:0;background:transparent;max-width:min(1600px,94vw);max-height:94vh;overflow:visible}
+#shotView::backdrop{background:rgba(8,9,12,.82)}
+#shotView img{display:block;max-width:100%;max-height:94vh;border-radius:8px}
+.shot-close{position:absolute;top:-14px;right:-14px;width:32px;height:32px;border-radius:50%;border:1px solid var(--border-strong);background:var(--surface);color:var(--fg);font-size:18px;line-height:1;cursor:pointer}
+
+
+</style>
+</head>
+<body>
+<!-- Brand icons: Font Awesome Free 6.5.2 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0) Copyright 2024 Fonticons, Inc. -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+<symbol id="i-github" viewBox="0 0 496 512"><path d="M165.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6zm-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3zm44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9zM244.8 8C106.1 8 0 113.3 0 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C428.2 457.8 496 362.9 496 252 496 113.3 383.5 8 244.8 8zM97.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1zm-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7zm32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1zm-11.4-14.7c-1.6 1-1.6 3.6 0 5.9 1.6 2.3 4.3 3.3 5.6 2.3 1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2z"/></symbol>
+<symbol id="i-linkedin" viewBox="0 0 448 512"><path d="M416 32H31.9C14.3 32 0 46.5 0 64.3v383.4C0 465.5 14.3 480 31.9 480H416c17.6 0 32-14.5 32-32.3V64.3c0-17.8-14.4-32.3-32-32.3zM135.4 416H69V202.2h66.5V416zm-33.2-243c-21.3 0-38.5-17.3-38.5-38.5S80.9 96 102.2 96c21.2 0 38.5 17.3 38.5 38.5 0 21.3-17.2 38.5-38.5 38.5zm282.1 243h-66.4V312c0-24.8-.5-56.7-34.5-56.7-34.6 0-39.9 27-39.9 54.9V416h-66.4V202.2h63.7v29.2h.9c8.9-16.8 30.6-34.5 62.9-34.5 67.2 0 79.7 44.3 79.7 101.9V416z"/></symbol>
+<symbol id="i-apple" viewBox="0 0 384 512"><path d="M318.7 268.7c-.2-36.7 16.4-64.4 50-84.8-18.8-26.9-47.2-41.7-84.7-44.6-35.5-2.8-74.3 20.7-88.5 20.7-15 0-49.4-19.7-76.4-19.7C63.3 141.2 4 184.8 4 273.5q0 39.3 14.4 81.2c12.8 36.7 59 126.7 107.2 125.2 25.2-.6 43-17.9 75.8-17.9 31.8 0 48.3 17.9 76.4 17.9 48.6-.7 90.4-82.5 102.6-119.3-65.2-30.7-61.7-90-61.7-91.9zm-56.6-164.2c27.3-32.4 24.8-61.9 24-72.5-24.1 1.4-52 16.4-67.9 34.9-17.5 19.8-27.8 44.3-25.6 71.9 26.1 2 49.9-11.4 69.5-34.3z"/></symbol>
+<symbol id="i-windows" viewBox="0 0 448 512"><path d="M0 93.7l183.6-25.3v177.4H0V93.7zm0 324.6l183.6 25.3V268.4H0v149.9zm203.8 28L448 480V268.4H203.8v177.9zm0-380.6v180.1H448V32L203.8 65.7z"/></symbol>
+<symbol id="i-linux" viewBox="0 0 448 512"><path d="M220.8 123.3c1 .5 1.8 1.7 3 1.7 1.1 0 2.8-.4 2.9-1.5.2-1.4-1.9-2.3-3.2-2.9-1.7-.7-3.9-1-5.5-.1-.4.2-.8.7-.6 1.1.3 1.3 2.3 1.1 3.4 1.7zm-21.9 1.7c1.2 0 2-1.2 3-1.7 1.1-.6 3.1-.4 3.5-1.6.2-.4-.2-.9-.6-1.1-1.6-.9-3.8-.6-5.5.1-1.3.6-3.4 1.5-3.2 2.9.1 1 1.8 1.5 2.8 1.4zM420 403.8c-3.6-4-5.3-11.6-7.2-19.7-1.8-8.1-3.9-16.8-10.5-22.4-1.3-1.1-2.6-2.1-4-2.9-1.3-.8-2.7-1.5-4.1-2 9.2-27.3 5.6-54.5-3.7-79.1-11.4-30.1-31.3-56.4-46.5-74.4-17.1-21.5-33.7-41.9-33.4-72C311.1 85.4 315.7.1 234.8 0 132.4-.2 158 103.4 156.9 135.2c-1.7 23.4-6.4 41.8-22.5 64.7-18.9 22.5-45.5 58.8-58.1 96.7-6 17.9-8.8 36.1-6.2 53.3-6.5 5.8-11.4 14.7-16.6 20.2-4.2 4.3-10.3 5.9-17 8.3s-14 6-18.5 14.5c-2.1 3.9-2.8 8.1-2.8 12.4 0 3.9.6 7.9 1.2 11.8 1.2 8.1 2.5 15.7.8 20.8-5.2 14.4-5.9 24.4-2.2 31.7 3.8 7.3 11.4 10.5 20.1 12.3 17.3 3.6 40.8 2.7 59.3 12.5 19.8 10.4 39.9 14.1 55.9 10.4 11.6-2.6 21.1-9.6 25.9-20.2 12.5-.1 26.3-5.4 48.3-6.6 14.9-1.2 33.6 5.3 55.1 4.1.6 2.3 1.4 4.6 2.5 6.7v.1c8.3 16.7 23.8 24.3 40.3 23 16.6-1.3 34.1-11 48.3-27.9 13.6-16.4 36-23.2 50.9-32.2 7.4-4.5 13.4-10.1 13.9-18.3.4-8.2-4.4-17.3-15.5-29.7zM223.7 87.3c9.8-22.2 34.2-21.8 44-.4 6.5 14.2 3.6 30.9-4.3 40.4-1.6-.8-5.9-2.6-12.6-4.9 1.1-1.2 3.1-2.7 3.9-4.6 4.8-11.8-.2-27-9.1-27.3-7.3-.5-13.9 10.8-11.8 23-4.1-2-9.4-3.5-13-4.4-1-6.9-.3-14.6 2.9-21.8zM183 75.8c10.1 0 20.8 14.2 19.1 33.5-3.5 1-7.1 2.5-10.2 4.6 1.2-8.9-3.3-20.1-9.6-19.6-8.4.7-9.8 21.2-1.8 28.1 1 .8 1.9-.2-5.9 5.5-15.6-14.6-10.5-52.1 8.4-52.1zm-13.6 60.7c6.2-4.6 13.6-10 14.1-10.5 4.7-4.4 13.5-14.2 27.9-14.2 7.1 0 15.6 2.3 25.9 8.9 6.3 4.1 11.3 4.4 22.6 9.3 8.4 3.5 13.7 9.7 10.5 18.2-2.6 7.1-11 14.4-22.7 18.1-11.1 3.6-19.8 16-38.2 14.9-3.9-.2-7-1-9.6-2.1-8-3.5-12.2-10.4-20-15-8.6-4.8-13.2-10.4-14.7-15.3-1.4-4.9 0-9 4.2-12.3zm3.3 334c-2.7 35.1-43.9 34.4-75.3 18-29.9-15.8-68.6-6.5-76.5-21.9-2.4-4.7-2.4-12.7 2.6-26.4v-.2c2.4-7.6.6-16-.6-23.9-1.2-7.8-1.8-15 .9-20 3.5-6.7 8.5-9.1 14.8-11.3 10.3-3.7 11.8-3.4 19.6-9.9 5.5-5.7 9.5-12.9 14.3-18 5.1-5.5 10-8.1 17.7-6.9 8.1 1.2 15.1 6.8 21.9 16l19.6 35.6c9.5 19.9 43.1 48.4 41 68.9zm-1.4-25.9c-4.1-6.6-9.6-13.6-14.4-19.6 7.1 0 14.2-2.2 16.7-8.9 2.3-6.2 0-14.9-7.4-24.9-13.5-18.2-38.3-32.5-38.3-32.5-13.5-8.4-21.1-18.7-24.6-29.9s-3-23.3-.3-35.2c5.2-22.9 18.6-45.2 27.2-59.2 2.3-1.7.8 3.2-8.7 20.8-8.5 16.1-24.4 53.3-2.6 82.4.6-20.7 5.5-41.8 13.8-61.5 12-27.4 37.3-74.9 39.3-112.7 1.1.8 4.6 3.2 6.2 4.1 4.6 2.7 8.1 6.7 12.6 10.3 12.4 10 28.5 9.2 42.4 1.2 6.2-3.5 11.2-7.5 15.9-9 9.9-3.1 17.8-8.6 22.3-15 7.7 30.4 25.7 74.3 37.2 95.7 6.1 11.4 18.3 35.5 23.6 64.6 3.3-.1 7 .4 10.9 1.4 13.8-35.7-11.7-74.2-23.3-84.9-4.7-4.6-4.9-6.6-2.6-6.5 12.6 11.2 29.2 33.7 35.2 59 2.8 11.6 3.3 23.7.4 35.7 16.4 6.8 35.9 17.9 30.7 34.8-2.2-.1-3.2 0-4.2 0 3.2-10.1-3.9-17.6-22.8-26.1-19.6-8.6-36-8.6-38.3 12.5-12.1 4.2-18.3 14.7-21.4 27.3-2.8 11.2-3.6 24.7-4.4 39.9-.5 7.7-3.6 18-6.8 29-32.1 22.9-76.7 32.9-114.3 7.2zm257.4-11.5c-.9 16.8-41.2 19.9-63.2 46.5-13.2 15.7-29.4 24.4-43.6 25.5s-26.5-4.8-33.7-19.3c-4.7-11.1-2.4-23.1 1.1-36.3 3.7-14.2 9.2-28.8 9.9-40.6.8-15.2 1.7-28.5 4.2-38.7 2.6-10.3 6.6-17.2 13.7-21.1.3-.2.7-.3 1-.5.8 13.2 7.3 26.6 18.8 29.5 12.6 3.3 30.7-7.5 38.4-16.3 9-.3 15.7-.9 22.6 5.1 9.9 8.5 7.1 30.3 17.1 41.6 10.6 11.6 14 19.5 13.7 24.6zM173.3 148.7c2 1.9 4.7 4.5 8 7.1 6.6 5.2 15.8 10.6 27.3 10.6 11.6 0 22.5-5.9 31.8-10.8 4.9-2.6 10.9-7 14.8-10.4s5.9-6.3 3.1-6.6-2.6 2.6-6 5.1c-4.4 3.2-9.7 7.4-13.9 9.8-7.4 4.2-19.5 10.2-29.9 10.2s-18.7-4.8-24.9-9.7c-3.1-2.5-5.7-5-7.7-6.9-1.5-1.4-1.9-4.6-4.3-4.9-1.4-.1-1.8 3.7 1.7 6.5z"/></symbol>
+</svg>
+
+
+
+<div style="font-family: 'Inter', system-ui, sans-serif; color: var(--fg); background: var(--bg); line-height: 1.55; -webkit-font-smoothing: antialiased">
+
+<!-- NAV -->
+<header style="border-bottom: 1px solid var(--border-soft)">
+<div style="max-width: 1120px; margin: 0 auto; padding: 14px 24px; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px 24px">
+<a href="#top" style="font-family: 'JetBrains Mono', monospace; font-weight: 600; font-size: 15px; color: var(--fg); display: flex; align-items: center; gap: 10px">
+<span aria-hidden="true" style="width: 10px; height: 10px; border-radius: 50%; background: var(--accent); display: inline-block"></span>code-visualizer
+</a>
+<nav style="display: flex; flex-wrap: wrap; gap: 4px 24px; font-size: 14px">
+<a class="navlink" href="#value" style="padding: 10px 0">Why</a>
+<a class="navlink" href="#features" style="padding: 10px 0">Features</a>
+<a class="navlink" href="#download" style="padding: 10px 0">Download</a>
+<a class="navlink" href="#faq" style="padding: 10px 0">FAQ</a>
+<a class="navlink with-ico" href="https://github.com/polysok/code-visualizer" target="_blank" rel="noopener" style="padding: 10px 0"><svg class="ico" aria-hidden="true"><use href="#i-github"/></svg>GitHub</a>
+<a class="navlink with-ico" href="https://www.linkedin.com/in/poly-sok/" target="_blank" rel="noopener" style="padding: 10px 0"><svg class="ico" aria-hidden="true"><use href="#i-linkedin"/></svg>LinkedIn</a>
+</nav>
+</div>
+</header>
+
+<main id="top">
+
+<!-- HERO -->
+<section style="max-width: 1120px; margin: 0 auto; padding: 88px 24px 36px">
+<p style="margin: 0 0 20px; font-family: 'JetBrains Mono', monospace; font-size: 13px; color: var(--muted)">Desktop app · IDE extensions · Open source (MIT)</p>
+<h1 style="margin: 0; max-width: 860px; font-size: 52px; line-height: 1.1; letter-spacing: -0.02em; font-weight: 700">Browse your code's call graph, linked to your IDE in both directions.</h1>
+</section>
+
+<!-- GRAPH -->
+<section style="max-width: 1120px; margin: 0 auto; padding: 0 24px">
+<p style="margin: 0 0 12px; font-family: 'JetBrains Mono', monospace; font-size: 13px; color: var(--muted)">Simplified sketch of the graph view: the callees of activate() in the VS Code extension. Hover or tap a node.</p>
+<div style="display: flex; flex-wrap: wrap; gap: 20px; align-items: stretch">
+<div style="flex: 2 1 560px; min-width: 0; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; background: var(--bg-code)">
+<div style="position: relative; width: 100%; padding-bottom: 62.2222%" role="group" aria-label="Interactive dependency graph: the function activate and its callees">
+<div id="stage" style="position: absolute; left: 0; top: 0; right: 0; bottom: 0; overflow: hidden"></div>
+</div>
+</div>
+<div id="infoPanel" style="flex: 1 1 280px; min-width: 0; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); padding: 20px 22px">
+<div id="infoKind" style="font-family: 'JetBrains Mono', monospace; font-size: 12px; letter-spacing: 0.06em; color: var(--muted)"></div>
+<div id="infoName" style="margin-top: 2px; font-family: 'JetBrains Mono', monospace; font-size: 20px; font-weight: 600; color: var(--fg); overflow-wrap: anywhere"></div>
+<div id="infoRows" style="margin-top: 16px; display: flex; flex-direction: column; gap: 6px; font-size: 14px"></div>
+<pre id="infoSource" style="margin: 18px 0 0; padding: 12px 14px; background: var(--bg-code); border: 1px solid var(--border); border-radius: 6px; overflow-x: auto; font-family: 'JetBrains Mono', monospace; font-size: 12px; line-height: 1.6; color: var(--fg)">export async function activate(context) {
+  await migrateLegacySettings();
+  const client = new CvizMcpClient(context);
+  const jobPoller = new JobPoller(
+    new CvizService(client));
+  ...</pre>
+<p id="infoHint" style="margin: 18px 0 0; font-size: 13px; color: var(--muted)"></p>
+</div>
+</div>
+</section>
+
+<section style="max-width: 1120px; margin: 0 auto; padding: 32px 24px 0">
+<p style="margin: 0; max-width: 700px; font-size: 18px; color: var(--fg-2)"><strong style="color: var(--fg); font-weight: 600">Code Visualizer</strong> is a free, open-source desktop app that shows the dependency graph of your repositories, one tab per repository: callers, callees and inheritance of any function, class or file. IDE extensions link it to your code in both directions: open the symbol under your cursor in the graph, and jump back to its code from any node.</p>
+<div style="margin-top: 36px; display: flex; flex-wrap: wrap; gap: 12px">
+<a class="btn-primary" href="#download" style="display: inline-flex; align-items: center; gap: 8px; min-height: 48px; padding: 0 22px; border-radius: 6px; font-weight: 600; font-size: 15px"><svg class="ico" aria-hidden="true"><use id="heroIcon" href="#i-apple"/></svg><span id="heroLabel">Download the app for macOS</span></a>
+<a class="btn-ghost" href="https://github.com/polysok/code-visualizer" target="_blank" rel="noopener" style="display: inline-flex; align-items: center; gap: 8px; min-height: 48px; padding: 0 22px; border-radius: 6px; font-weight: 500; font-size: 15px"><svg class="ico" aria-hidden="true"><use href="#i-github"/></svg>View on GitHub</a>
+</div>
+<p style="margin: 20px 0 0; font-family: 'JetBrains Mono', monospace; font-size: 13px; color: var(--muted)"><span class="with-ico" style="gap:6px"><svg class="ico" aria-hidden="true"><use href="#i-apple"/></svg>macOS</span> · <span class="with-ico" style="gap:6px"><svg class="ico" aria-hidden="true"><use href="#i-windows"/></svg>Windows</span> · <span class="with-ico" style="gap:6px"><svg class="ico" aria-hidden="true"><use href="#i-linux"/></svg>Linux</span> &nbsp;/&nbsp; 100% local, no server, no account</p>
+</section>
+
+<!-- SCREENSHOTS: one <a class="shot"> per capture. The thumbnail (720 px
+     wide) is shown, the full image (1600 px) opens on click. -->
+<section style="max-width: 1120px; margin: 0 auto; padding: 56px 24px 0">
+<h2 style="margin: 0 0 16px; font-size: 14px; font-weight: 600; color: var(--muted); font-family: 'JetBrains Mono', monospace">Screenshots</h2>
+<div class="shots">
+<a class="shot" href="images/dark-theme-1600.jpg">
+<img src="images/dark-theme-thumb.jpg" width="720" height="452" loading="lazy" decoding="async" alt="The Code Visualizer desktop app: the call graph of the activate function of a VS Code extension, its callees around it, and the function's file, lines, complexity and source code in the side panel">
+<span>The graph of a function and its source</span>
+</a>
+<a class="shot" href="images/semantic-search-1600.jpg">
+<img src="images/semantic-search-thumb.jpg" width="720" height="451" loading="lazy" decoding="async" alt="Natural-language search in Code Visualizer: the question &quot;which part vectorizes code?&quot; answered by a local LLM that names the functions involved, with the matching artifacts listed as links to their nodes in the graph">
+<span>Ask a question about the code, in plain words</span>
+</a>
+<a class="shot" href="images/code-diff-1600.jpg">
+<img src="images/code-diff-thumb.jpg" width="720" height="451" loading="lazy" decoding="async" alt="The Changes view of Code Visualizer comparing the current branch with a target branch: added and modified functions marked + and ~ in the graph, the list of changes per file with their callers, and an added function flagged as reached by no test">
+<span>Review a branch: what changed, and what calls it</span>
+</a>
+</div>
+</section>
+<dialog id="shotView" aria-label="Screenshot">
+<img alt="">
+<button type="button" class="shot-close" aria-label="Close">×</button>
+</dialog>
+
+<!-- VALUE -->
+<section id="value" style="max-width: 1120px; margin: 0 auto; padding: 88px 24px 24px">
+<h2 style="margin: 0 0 12px; font-size: 32px; letter-spacing: -0.01em; font-weight: 700">Why use it</h2>
+<p style="margin: 0 0 40px; max-width: 720px; font-size: 17px; color: var(--fg-2)">A text search finds names. Here, the graph follows actual calls and stays in sync with the code you are editing.</p>
+<div style="display: flex; flex-wrap: wrap; gap: 20px">
+<div style="flex: 1 1 320px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 24px">
+<h3 style="margin: 0 0 8px; font-size: 17px; font-weight: 600">IDE ↔ graph navigation</h3>
+<p style="margin: 0; color: var(--fg-2); font-size: 15px">From the editor, <code style="font-family: 'JetBrains Mono', monospace; font-size: 13px; color: var(--fg)">Cmd/Ctrl+Alt+G</code> with the VS Code or Cursor extension opens the symbol under the cursor in the app, centred on it. From the graph, a node opens its code in VS Code, Cursor, Rider, IntelliJ or Zed.</p>
+</div>
+<div style="flex: 1 1 320px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 24px">
+<h3 style="margin: 0 0 8px; font-size: 17px; font-weight: 600">The same graph for your AI agent</h3>
+<p style="margin: 0; color: var(--fg-2); font-size: 15px">An MCP server gives Claude Code, Cursor, Copilot in VS Code, Codex and other agents the graph you see: search code by meaning, walk callers and callees to assess the impact of a change, read the code of a symbol. <code style="font-family: 'JetBrains Mono', monospace; font-size: 13px; color: var(--fg)">cviz mcp setup</code> configures your agent.</p>
+</div>
+<div style="flex: 1 1 320px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 24px">
+<h3 style="margin: 0 0 8px; font-size: 17px; font-weight: 600">Always up to date</h3>
+<p style="margin: 0; color: var(--fg-2); font-size: 15px">The watcher pushes changes to open pages, catches up on start-up with files modified while it was not running, and re-links callers after a rename.</p>
+</div>
+<div style="flex: 1 1 320px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 24px">
+<h3 style="margin: 0 0 8px; font-size: 17px; font-weight: 600">Local by design</h3>
+<p style="margin: 0; color: var(--fg-2); font-size: 15px">Everything is embedded: LadybugDB (no server, no credentials) and a local embedding model, so nothing leaves your machine. One index per repository, in <code style="font-family: 'JetBrains Mono', monospace; font-size: 13px; color: var(--fg)">.code-visualizer/</code> (ignored by Git). The LLM used by search is optional and configured by default for a local Ollama or LM Studio.</p>
+</div>
+</div>
+</section>
+
+<!-- FEATURES -->
+<section id="features" style="max-width: 1120px; margin: 0 auto; padding: 88px 24px 24px">
+<h2 style="margin: 0 0 32px; font-size: 32px; letter-spacing: -0.01em; font-weight: 700">Features</h2>
+<div style="border-top: 1px solid var(--border)">
+<div class="row" style="display: flex; flex-wrap: wrap; gap: 8px 32px; padding: 20px 8px; border-bottom: 1px solid var(--border)">
+<div style="flex: 1 1 240px; font-weight: 600; font-size: 16px">Desktop app</div>
+<div style="flex: 3 1 420px; color: var(--fg-2); font-size: 15px">macOS, Windows and Linux. One tab per repository, restored at the next start (Cmd/Ctrl+O opens one). Opening a folder indexes it, then keeps it up to date as you edit. Nothing else to install.</div>
+</div>
+<div class="row" style="display: flex; flex-wrap: wrap; gap: 8px 32px; padding: 20px 8px; border-bottom: 1px solid var(--border)">
+<div style="flex: 1 1 240px; font-weight: 600; font-size: 16px">Supported languages</div>
+<div style="flex: 3 1 420px; color: var(--fg-2); font-size: 15px">Python, JavaScript, TypeScript (TSX), Java, C#, C, C++, Go, Rust, Swift, Kotlin, Scala, PHP, Ruby, Dart, Elixir, Haskell, Lua, Perl, Solidity, Vue, Svelte, HTML, CSS, HCL (Terraform) and Emacs Lisp.</div>
+</div>
+<div class="row" style="display: flex; flex-wrap: wrap; gap: 8px 32px; padding: 20px 8px; border-bottom: 1px solid var(--border)">
+<div style="flex: 1 1 240px; font-weight: 600; font-size: 16px">Callers, callees, inheritance</div>
+<div style="flex: 3 1 420px; color: var(--fg-2); font-size: 15px">For a function, class or file, from 1 to 5 levels deep. A click adds a node's neighbours to the graph, a double click recentres on it. Heuristic edges can be hidden.</div>
+</div>
+<div class="row" style="display: flex; flex-wrap: wrap; gap: 8px 32px; padding: 20px 8px; border-bottom: 1px solid var(--border)">
+<div style="flex: 1 1 240px; font-weight: 600; font-size: 16px">Changes view</div>
+<div style="flex: 3 1 420px; color: var(--fg-2); font-size: 15px">Compares the current state with a target branch: added, modified, moved, renamed and deleted artifacts.</div>
+</div>
+<div class="row" style="display: flex; flex-wrap: wrap; gap: 8px 32px; padding: 20px 8px; border-bottom: 1px solid var(--border)">
+<div style="flex: 1 1 240px; font-weight: 600; font-size: 16px">IDE extensions</div>
+<div style="flex: 3 1 420px; color: var(--fg-2); font-size: 15px">They link the graph to the code in both directions. VS Code and Cursor: .vsix extension, command "CViz: Open in Dependency Graph" (Cmd/Ctrl+Alt+G). Rider, IntelliJ and other JetBrains IDEs: External Tool installed by cviz ide jetbrains. Zed: task installed by cviz ide zed /path/to/repo. A node's "Open in IDE" goes back to the code.</div>
+</div>
+<div class="row" style="display: flex; flex-wrap: wrap; gap: 8px 32px; padding: 20px 8px; border-bottom: 1px solid var(--border)">
+<div style="flex: 1 1 240px; font-weight: 600; font-size: 16px">Open in the graph</div>
+<div style="flex: 3 1 420px; color: var(--fg-2); font-size: 15px">When the app is running, it comes forward on the repository's tab, centred on the symbol under your cursor (opened and indexed first if needed). Otherwise the graph page opens in the browser. From a terminal: cviz-open FILE:LINE.</div>
+</div>
+<div class="row" style="display: flex; flex-wrap: wrap; gap: 8px 32px; padding: 20px 8px; border-bottom: 1px solid var(--border)">
+<div style="flex: 1 1 240px; font-weight: 600; font-size: 16px">Live updates</div>
+<div style="flex: 3 1 420px; color: var(--fg-2); font-size: 15px">The watcher pushes changes to open pages (SSE), catches up on files changed while it was stopped, and re-links calls to symbols defined after their callers and after a rename.</div>
+</div>
+<div class="row" style="display: flex; flex-wrap: wrap; gap: 8px 32px; padding: 20px 8px; border-bottom: 1px solid var(--border)">
+<div style="flex: 1 1 240px; font-weight: 600; font-size: 16px">Calls resolved by type</div>
+<div style="flex: 3 1 420px; color: var(--fg-2); font-size: 15px">C#, Rust, TypeScript and Swift: a method call is bound through the receiver's declared type. Interface, trait and protocol calls go to an implementation, marked as heuristic.</div>
+</div>
+<div class="row" style="display: flex; flex-wrap: wrap; gap: 8px 32px; padding: 20px 8px; border-bottom: 1px solid var(--border)">
+<div style="flex: 1 1 240px; font-weight: 600; font-size: 16px">Natural-language search</div>
+<div style="flex: 3 1 420px; color: var(--fg-2); font-size: 15px">A hybrid search box (meaning and keywords), at most 5 results, each linked to its node. An optional LLM, configured by default for a local Ollama or LM Studio (any OpenAI-compatible server works), re-ranks results and answers how / why questions.</div>
+</div>
+<div class="row" style="display: flex; flex-wrap: wrap; gap: 8px 32px; padding: 20px 8px; border-bottom: 1px solid var(--border)">
+<div style="flex: 1 1 240px; font-weight: 600; font-size: 16px">One index per repository</div>
+<div style="flex: 3 1 420px; color: var(--fg-2); font-size: 15px">LadybugDB database stored in the repository, dedicated server on port 9324 (or the next free one). Vectors are computed at start-up with a local multilingual model or an embedding server.</div>
+</div>
+<div class="row" style="display: flex; flex-wrap: wrap; gap: 8px 32px; padding: 20px 8px; border-bottom: 1px solid var(--border)">
+<div style="flex: 1 1 240px; font-weight: 600; font-size: 16px">Large repositories</div>
+<div style="flex: 3 1 420px; color: var(--fg-2); font-size: 15px">Two-stage indexing: the page opens after the first 1,000 files, the rest follows in the background with a progress badge.</div>
+</div>
+<div class="row" style="display: flex; flex-wrap: wrap; gap: 8px 32px; padding: 20px 8px; border-bottom: 1px solid var(--border)">
+<div style="flex: 1 1 240px; font-weight: 600; font-size: 16px">HTTP API</div>
+<div style="flex: 3 1 420px; color: var(--fg-2); font-size: 15px">/api/locate, /api/neighborhood, /api/events, /api/focus, /api/open, /api/search, /api/chat.</div>
+</div>
+
+</div>
+</section>
+
+<!-- GETTING STARTED -->
+<section style="max-width: 1120px; margin: 0 auto; padding: 88px 24px 24px">
+<h2 style="margin: 0 0 12px; font-size: 32px; letter-spacing: -0.01em; font-weight: 700">Get started</h2>
+<p style="margin: 0 0 28px; max-width: 720px; font-size: 17px; color: var(--fg-2)">Install the app, add the extension for your IDE, then open a repository with + (or Cmd/Ctrl+O). The command line is only needed for the JetBrains and Zed extensions, the MCP server for AI agents, a terminal or a remote machine.</p>
+<pre style="margin: 0; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 20px 24px; overflow-x: auto; font-family: 'JetBrains Mono', monospace; font-size: 13.5px; line-height: 1.8; color: var(--fg)"><span style="color: var(--muted)"># 1. install the desktop app (see the tab for your system below)</span>
+<span style="color: var(--muted)"># 2. install the extension for your IDE (VS Code / Cursor: Extensions › … › Install from VSIX)</span>
+<span style="color: var(--muted)"># 3. open a repository in the app: + or Cmd/Ctrl+O</span>
+
+<span style="color: var(--muted)"># optional, command line: open the graph of the current repository in the browser</span>
+cviz graph --watch .      <span style="color: var(--muted)"># http://localhost:9324/graph</span>
+<span style="color: var(--muted)"># open a specific location in the graph</span>
+cviz-open src/app.py:42</pre>
+<p style="margin: 16px 0 0; color: var(--muted); font-size: 14px">On a large repository, the page opens once the first 1,000 files are indexed (code before tests and generated files) and the rest is indexed in the background. <code style="font-family: 'JetBrains Mono', monospace; font-size: 13px; color: var(--fg-2)">cviz config set GRAPH_FIRST_PASS_FILES 3000</code> changes that size.</p>
+
+<h3 id="mcp" style="margin: 48px 0 8px; font-size: 20px; font-weight: 600">Connect your AI agent (MCP)</h3>
+<p style="margin: 0 0 20px; max-width: 720px; font-size: 15px; color: var(--fg-2)">The MCP server gives your coding agent five read-only tools on the graph: an overview, code search, callers and callees, a symbol's code, and Cypher queries. It needs the <a href="#download">command line</a>.</p>
+<pre style="margin: 0; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 20px 24px; overflow-x: auto; font-family: 'JetBrains Mono', monospace; font-size: 13.5px; line-height: 1.8; color: var(--fg)"><span style="color: var(--muted)"># configure your agent: pick it from the list (Claude Code, Claude Desktop,</span>
+<span style="color: var(--muted)"># Cursor, VS Code, Windsurf, Zed, Gemini CLI, Codex, Cline, JetBrains AI...)</span>
+cviz mcp setup
+
+<span style="color: var(--muted)"># or by hand, Claude Code</span>
+claude mcp add code-visualizer -- cviz mcp start
+
+<span style="color: var(--muted)"># or by hand, any agent: its MCP configuration</span>
+{ "mcpServers": { "code-visualizer": { "command": "cviz", "args": ["mcp", "start"] } } }
+
+<span style="color: var(--muted)"># a client without project folders (Claude Desktop): name the repository</span>
+"args": ["mcp", "start", "--repo", "/path/to/repo"]</pre>
+<p style="margin: 16px 0 0; color: var(--muted); font-size: 14px">Which repository: <code style="font-family: 'JetBrains Mono', monospace; font-size: 13px; color: var(--fg-2)">--repo</code> when given, else the project folder the client announces (VS Code, Cursor and other clients send it), else the folder the agent runs in (Claude Code, Codex, Gemini CLI). The MCP server goes through the graph server of that repository, the one the app or <code style="font-family: 'JetBrains Mono', monospace; font-size: 13px; color: var(--fg-2)">cviz graph</code> runs, so the agent and the graph share one index; when none runs, it starts one, indexing the repository the first time.</p>
+</section>
+
+<!-- DOWNLOAD -->
+<section id="download" style="max-width: 1120px; margin: 0 auto; padding: 88px 24px 24px">
+<h2 style="margin: 0 0 12px; font-size: 32px; letter-spacing: -0.01em; font-weight: 700">Download</h2>
+<p style="margin: 0 0 28px; max-width: 720px; font-size: 17px; color: var(--fg-2)"><span id="detectedLine">The desktop app is available for macOS (.dmg, Apple Silicon), Windows (x64 setup .exe) and Linux (.deb, .AppImage), on the <a href="https://github.com/polysok/code-visualizer/releases/latest">releases page</a>.</span></p>
+<div style="display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 24px">
+<button class="tab with-ico" data-os="mac"><svg class="ico" aria-hidden="true"><use href="#i-apple"/></svg>macOS</button>
+<button class="tab with-ico" data-os="win"><svg class="ico" aria-hidden="true"><use href="#i-windows"/></svg>Windows</button>
+<button class="tab with-ico" data-os="linux"><svg class="ico" aria-hidden="true"><use href="#i-linux"/></svg>Linux</button>
+</div>
+
+<h3 style="margin: 40px 0 12px; font-size: 14px; font-weight: 600; color: var(--muted); font-family: 'JetBrains Mono', monospace">Desktop app and extensions</h3>
+<div style="border-top: 1px solid var(--border)">
+<div id="files"></div>
+</div>
+<div style="margin-top: 32px"></div>
+<div style="background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 24px">
+<h3 style="margin: 0 0 4px; font-size: 14px; font-weight: 600; color: var(--muted); font-family: 'JetBrains Mono', monospace">Command line (optional)</h3>
+<p style="margin: 0 0 14px; color: var(--fg-2); font-size: 15px">Installs <code style="font-family: 'JetBrains Mono', monospace; font-size: 13px; color: var(--fg)">cviz</code> and <code style="font-family: 'JetBrains Mono', monospace; font-size: 13px; color: var(--fg)">cviz-open</code>, needed by the JetBrains and Zed extensions, the <a href="#mcp">MCP server</a>, a terminal or a remote machine. Run it from the repository's folder; run it again to upgrade.</p>
+<pre style="margin: 0; background: var(--bg-code); border: 1px solid var(--border); border-radius: 6px; padding: 16px 18px; overflow-x: auto; font-family: 'JetBrains Mono', monospace; font-size: 13px; color: var(--fg); white-space: pre-wrap; word-break: break-all"><code id="installCmd"></code></pre>
+<p style="margin: 14px 0 0; color: var(--muted); font-size: 14px">Or the engine as a single command-line program, no Python needed (run it from a terminal, it is not an app): <a id="binLink" href="#" target="_blank" rel="noopener"></a></p>
+</div>
+
+
+</section>
+
+<!-- FAQ -->
+<section id="faq" style="max-width: 1120px; margin: 0 auto; padding: 88px 24px 24px">
+<h2 style="margin: 0 0 28px; font-size: 32px; letter-spacing: -0.01em; font-weight: 700">Frequently asked questions</h2>
+<div style="border-top: 1px solid var(--border)">
+<details style="border-bottom: 1px solid var(--border); padding: 0 8px">
+<summary style="cursor: pointer; padding: 16px 0; font-weight: 600; font-size: 16px; color: var(--fg)"><h3 style="display: inline; margin: 0; font-size: inherit; font-weight: inherit">What is Code Visualizer?</h3></summary>
+<p style="margin: 0 0 16px; color: var(--fg-2); font-size: 15px">Code Visualizer is a free, open-source desktop app for macOS, Windows and Linux that shows the dependency graph of a code repository: the callers, callees and inheritance of any function, class or file. IDE extensions link the graph to the code in both directions.</p>
+</details>
+<details style="border-bottom: 1px solid var(--border); padding: 0 8px">
+<summary style="cursor: pointer; padding: 16px 0; font-weight: 600; font-size: 16px; color: var(--fg)"><h3 style="display: inline; margin: 0; font-size: inherit; font-weight: inherit">Is Code Visualizer free?</h3></summary>
+<p style="margin: 0 0 16px; color: var(--fg-2); font-size: 15px">Yes. It is open source under the MIT License, with no account, no subscription and no server to run.</p>
+</details>
+<details style="border-bottom: 1px solid var(--border); padding: 0 8px">
+<summary style="cursor: pointer; padding: 16px 0; font-weight: 600; font-size: 16px; color: var(--fg)"><h3 style="display: inline; margin: 0; font-size: inherit; font-weight: inherit">Which programming languages does it support?</h3></summary>
+<p style="margin: 0 0 16px; color: var(--fg-2); font-size: 15px">Python, JavaScript, TypeScript (TSX), Java, C#, C, C++, Go, Rust, Swift, Kotlin, Scala, PHP, Ruby, Dart, Elixir, Haskell, Lua, Perl, Solidity, Vue, Svelte, HTML, CSS, HCL (Terraform) and Emacs Lisp. In C#, Rust, TypeScript and Swift, method calls are also resolved through the receiver's declared type.</p>
+</details>
+<details style="border-bottom: 1px solid var(--border); padding: 0 8px">
+<summary style="cursor: pointer; padding: 16px 0; font-weight: 600; font-size: 16px; color: var(--fg)"><h3 style="display: inline; margin: 0; font-size: inherit; font-weight: inherit">Does my code leave my machine?</h3></summary>
+<p style="margin: 0 0 16px; color: var(--fg-2); font-size: 15px">No. Indexing, the graph database (LadybugDB, embedded) and the embedding model used by the search all run locally. The LLM that re-ranks search results is optional and set up by default for a local Ollama or LM Studio.</p>
+</details>
+<details style="border-bottom: 1px solid var(--border); padding: 0 8px">
+<summary style="cursor: pointer; padding: 16px 0; font-weight: 600; font-size: 16px; color: var(--fg)"><h3 style="display: inline; margin: 0; font-size: inherit; font-weight: inherit">Which IDEs work with it?</h3></summary>
+<p style="margin: 0 0 16px; color: var(--fg-2); font-size: 15px">VS Code and Cursor (a .vsix extension), Rider, IntelliJ and the other JetBrains IDEs (an External Tool) and Zed (a task). From the editor, the symbol under the cursor opens in the app; from the graph, a node opens its code in the IDE.</p>
+</details>
+<details style="border-bottom: 1px solid var(--border); padding: 0 8px">
+<summary style="cursor: pointer; padding: 16px 0; font-weight: 600; font-size: 16px; color: var(--fg)"><h3 style="display: inline; margin: 0; font-size: inherit; font-weight: inherit">Does it handle large repositories?</h3></summary>
+<p style="margin: 0 0 16px; color: var(--fg-2); font-size: 15px">Yes. The first index runs in two stages: the graph opens once the first 1,000 files are indexed (code before tests and generated files) and the rest is indexed in the background. The graph then stays up to date as you edit.</p>
+</details>
+<details style="border-bottom: 1px solid var(--border); padding: 0 8px">
+<summary style="cursor: pointer; padding: 16px 0; font-weight: 600; font-size: 16px; color: var(--fg)"><h3 style="display: inline; margin: 0; font-size: inherit; font-weight: inherit">How is it different from a text search?</h3></summary>
+<p style="margin: 0 0 16px; color: var(--fg-2); font-size: 15px">A text search finds names. Code Visualizer follows the calls and inheritance it resolved when indexing, so a call on a standard-library object such as a Mutex or a Map does not link to a same-named method of your project, and the Changes view shows what a branch added, modified, moved, renamed or deleted.</p>
+</details>
+</div>
+</section>
+
+<!-- GOOD TO KNOW -->
+<section style="max-width: 1120px; margin: 0 auto; padding: 88px 24px 24px">
+<h2 style="margin: 0 0 28px; font-size: 32px; letter-spacing: -0.01em; font-weight: 700">Good to know</h2>
+<div style="border-top: 1px solid var(--border)">
+<div style="padding: 16px 8px; border-bottom: 1px solid var(--border); color: var(--fg-2); font-size: 15px; display: flex; gap: 14px">
+<span aria-hidden="true" style="color: var(--teal); font-family: 'JetBrains Mono', monospace">/</span>
+<span>Only one process opens the LadybugDB database at a time: one cviz graph instance per repository.</span>
+</div>
+<div style="padding: 16px 8px; border-bottom: 1px solid var(--border); color: var(--fg-2); font-size: 15px; display: flex; gap: 14px">
+<span aria-hidden="true" style="color: var(--teal); font-family: 'JetBrains Mono', monospace">/</span>
+<span>Receiver-type resolution covers C#, Rust, TypeScript and Swift. Elsewhere, call resolution does not use the receiver's type.</span>
+</div>
+<div style="padding: 16px 8px; border-bottom: 1px solid var(--border); color: var(--fg-2); font-size: 15px; display: flex; gap: 14px">
+<span aria-hidden="true" style="color: var(--teal); font-family: 'JetBrains Mono', monospace">/</span>
+<span>The desktop apps are not signed: macOS and Windows ask for a manual approval on first launch.</span>
+</div>
+<div style="padding: 16px 8px; border-bottom: 1px solid var(--border); color: var(--fg-2); font-size: 15px; display: flex; gap: 14px">
+<span aria-hidden="true" style="color: var(--teal); font-family: 'JetBrains Mono', monospace">/</span>
+<span>The JetBrains and Zed extensions run cviz-open: they need the command line installed.</span>
+</div>
+
+</div>
+</section>
+
+</main>
+
+<!-- FOOTER -->
+<footer style="margin-top: 88px; border-top: 1px solid var(--border-soft)">
+<div style="max-width: 1120px; margin: 0 auto; padding: 40px 24px 56px; display: flex; flex-wrap: wrap; gap: 32px 64px; justify-content: space-between">
+<div style="flex: 1 1 380px; max-width: 520px; font-size: 14px; color: var(--muted)">
+<div style="font-family: 'JetBrains Mono', monospace; font-weight: 600; color: var(--fg); margin-bottom: 8px">code-visualizer</div>
+MIT License. Built on <a href="https://github.com/CodeGraphContext/CodeGraphContext" target="_blank" rel="noopener">CodeGraphContext</a>.
+</div>
+<nav style="display: flex; flex-direction: column; gap: 2px; font-size: 14px">
+<a class="with-ico" href="https://github.com/polysok/code-visualizer" target="_blank" rel="noopener" style="padding: 8px 0"><svg class="ico" aria-hidden="true"><use href="#i-github"/></svg>GitHub repository</a>
+<a href="https://github.com/polysok/code-visualizer/releases/latest" target="_blank" rel="noopener" style="padding: 8px 0">Releases</a>
+<a href="https://github.com/polysok/code-visualizer/issues" target="_blank" rel="noopener" style="padding: 8px 0">Report an issue</a>
+<a class="with-ico" href="https://www.linkedin.com/in/poly-sok/" target="_blank" rel="noopener" style="padding: 8px 0"><svg class="ico" aria-hidden="true"><use href="#i-linkedin"/></svg>Poly Sok on LinkedIn</a>
+</nav>
+</div>
+</footer>
+
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  /* ---------- OS detection, tabs, downloads ---------- */
+  var REL = 'https://github.com/polysok/code-visualizer/releases/latest';
+  var DL = REL + '/download/';
+  var REPO = 'https://github.com/polysok/code-visualizer';
+  var NAMES = { mac: 'macOS', win: 'Windows', linux: 'Linux' };
+  var CMDS = {
+    mac: 'curl -LsSf ' + DL + 'install.sh | sh',
+    linux: 'curl -LsSf ' + DL + 'install.sh | sh',
+    win: 'irm ' + DL + 'install.ps1 | iex'
+  };
+  var BIN = { mac: 'cviz-macos-arm64', win: 'cviz-windows.exe', linux: 'cviz-linux-x86_64' };
+  var EXT = [
+    { name: 'VS Code / Cursor extension (.vsix)', meta: 'Extensions › … › Install from VSIX. Open the symbol under the cursor in the graph with Cmd/Ctrl+Alt+G.', href: REL, cta: 'Release page' },
+    { name: 'JetBrains and Zed extensions', meta: 'Installed from the command line: cviz ide jetbrains, cviz ide zed /path/to/repo. Sources in extensions/rider/ and extensions/zed/.', href: REPO, cta: 'Repository' }
+  ];
+  var FILES = {
+    mac: [{ name: 'Desktop app (.dmg, Apple Silicon)', meta: 'One tab per repository, nothing else to install. Not signed: macOS asks once to allow it in System Settings › Privacy & Security › Open Anyway.', href: REL, cta: 'Release page' }].concat(EXT),
+    win: [{ name: 'Desktop app (x64-setup.exe)', meta: 'One tab per repository, nothing else to install. Not signed: SmartScreen shows a warning, choose More info › Run anyway.', href: REL, cta: 'Release page' }].concat(EXT),
+    linux: [{ name: 'Desktop app (.deb or .AppImage)', meta: 'One tab per repository, nothing else to install.', href: REL, cta: 'Release page' }].concat(EXT)
+  };
+
+  function detectOS() {
+    var ua = (navigator.userAgent || '') + ' ' + (navigator.platform || '');
+    if (/Win/i.test(ua)) return 'win';
+    if (/Android/i.test(ua)) return 'mac';
+    if (/Linux|X11/i.test(ua)) return 'linux';
+    return 'mac';
+  }
+
+  function el(tag, props, children) {
+    var n = document.createElement(tag);
+    Object.keys(props || {}).forEach(function (k) {
+      if (k === 'text') n.textContent = props[k];
+      else if (k === 'style') n.style.cssText = props[k];
+      else n.setAttribute(k, props[k]);
+    });
+    (children || []).forEach(function (c) { n.appendChild(c); });
+    return n;
+  }
+
+  var detected = detectOS();
+  var tabs = Array.prototype.slice.call(document.querySelectorAll('.tab[data-os]'));
+
+  function showOS(os) {
+    tabs.forEach(function (t) {
+      var on = t.getAttribute('data-os') === os;
+      t.className = 'tab with-ico' + (on ? ' tab-on' : '');
+      t.setAttribute('aria-pressed', on ? 'true' : 'false');
+    });
+    document.getElementById('installCmd').textContent = CMDS[os];
+    var b = document.getElementById('binLink');
+    b.textContent = BIN[os];
+    b.href = DL + BIN[os];
+    b.target = '_blank';
+    b.rel = 'noopener';
+    var box = document.getElementById('files');
+    box.textContent = '';
+    FILES[os].forEach(function (f) {
+      var row = el('div', { 'class': 'row', style: 'display:flex;flex-wrap:wrap;align-items:center;gap:12px 24px;padding:18px 8px;border-bottom:1px solid var(--border)' }, [
+        el('div', { style: 'flex:1 1 380px;min-width:0' }, [
+          el('div', { text: f.name, style: 'font-weight:600;font-size:16px' }),
+          el('div', { text: f.meta, style: 'color:var(--muted);font-size:14px;margin-top:2px' })
+        ]),
+        el('a', { 'class': 'btn-ghost', href: f.href, target: '_blank', rel: 'noopener', text: f.cta, style: 'display:inline-flex;align-items:center;min-height:44px;padding:0 18px;border-radius:6px;font-size:14px;font-weight:500;white-space:nowrap' })
+      ]);
+      box.appendChild(row);
+    });
+  }
+
+  document.getElementById('heroLabel').textContent = 'Download the app for ' + NAMES[detected];
+  document.getElementById('heroIcon').setAttribute('href', '#i-' + { mac: 'apple', win: 'windows', linux: 'linux' }[detected]);
+  document.getElementById('detectedLine').textContent = 'Detected system: ' + NAMES[detected] + '. Files for other systems are in the tabs.';
+  tabs.forEach(function (t) {
+    t.addEventListener('click', function () { showOS(t.getAttribute('data-os')); });
+  });
+  showOS(detected);
+
+
+  /* ---------- Screenshots: the full image in a dialog ---------- */
+  var shotView = document.getElementById('shotView');
+  Array.prototype.forEach.call(document.querySelectorAll('.shot'), function (a) {
+    a.addEventListener('click', function (e) {
+      if (!shotView.showModal) return;  // old browser: follow the link
+      e.preventDefault();
+      var img = shotView.querySelector('img');
+      img.src = a.getAttribute('href');
+      img.alt = a.querySelector('img').alt;
+      shotView.showModal();
+    });
+  });
+  shotView.addEventListener('click', function () { shotView.close(); });
+
+  /* ---------- Graph sketch ---------- */
+  var G = { W: 900, H: 560, CX: 450, CY: 280, RX: 270, RY: 205 };
+  var defs = [
+    ['findClassHierarchy', 'f'], ['pop', 'f'], ['SidebarControlPanel', 'c'], ['show', 'f'], ['postEditorSelection', 'f'], ['CvizService', 'c'],
+    ['on', 'f'], ['CvizHoverProvider', 'c'], ['startPolling', 'f'], ['String', 'c'], ['GraphLauncher', 'c'], ['emit', 'f'],
+    ['switchContext', 'f'], ['JobPoller', 'c'], ['initializeContext', 'f'], ['push', 'f'], ['CvizMcpClient', 'c'], ['useWebGraph', 'f'],
+    ['ensureStarted', 'f'], ['CvizDeadCodeDiagnostics', 'c'], ['getComplexity', 'f'], ['error', 'f'], ['CvizStatusBarItem', 'c'], ['updateMenuContext', 'f'],
+    ['migrateLegacySettings', 'f'], ['CallGraphPanel', 'c']
+  ];
+  var heur = { pop: 1, on: 1, push: 1, emit: 1, error: 1 };
+  var fs = [1, 0.7, 0.85, 0.55];
+  var reduced = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+  var animate = !reduced && !!window.requestAnimationFrame;
+  var stage = document.getElementById('stage');
+  var state = { hov: null, sel: null };
+  var time = 0;
+
+  var nodes = defs.map(function (d, i) {
+    var th = -Math.PI / 2 + (i + 0.5) / defs.length * 2 * Math.PI;
+    var f = fs[i % fs.length];
+    var tx = G.CX + G.RX * f * Math.cos(th), ty = G.CY + G.RY * f * Math.sin(th);
+    return { id: 'n' + i, name: d[0], kind: d[1], th: th, tx: tx, ty: ty, heur: !!heur[d[0]],
+      x: animate ? G.CX : tx, y: animate ? G.CY : ty, vx: 0, vy: 0, ph: i * 1.7 };
+  });
+
+  function pct(v, total) { return (v / total * 100).toFixed(3) + '%'; }
+  var abs = 'position:absolute;';
+
+  nodes.forEach(function (nd) {
+    var c = Math.cos(nd.th), s = Math.sin(nd.th);
+    nd.tf = 'translate(12px,-50%)';
+    if (Math.abs(c) < 0.3) nd.tf = s < 0 ? 'translate(-50%,calc(-100% - 12px))' : 'translate(-50%,12px)';
+    else if (c < 0) nd.tf = 'translate(calc(-100% - 12px),-50%)';
+    nd.edge = el('div', {});
+    nd.arrow = el('div', {});
+    nd.label = el('span', { 'class': 'glabel', text: nd.name });
+    nd.shape = el('span', {});
+    nd.btn = el('button', { type: 'button', 'aria-label': (nd.kind === 'c' ? 'Class ' : 'Function ') + nd.name }, [nd.shape]);
+    nd.btn.style.cssText = 'padding:0;border:0;background:transparent;cursor:pointer;display:flex;align-items:center;justify-content:center;width:28px;height:28px;margin:-14px 0 0 -14px;' + abs;
+    nd.btn.addEventListener('mouseenter', function () { state.hov = nd.id; draw(); });
+    nd.btn.addEventListener('mouseleave', function () { state.hov = null; draw(); });
+    nd.btn.addEventListener('focus', function () { state.hov = nd.id; draw(); });
+    nd.btn.addEventListener('blur', function () { state.hov = null; draw(); });
+    nd.btn.addEventListener('click', function () { state.sel = state.sel === nd.id ? null : nd.id; draw(); });
+  });
+  var centerShape = el('span', {});
+  var centerBtn = el('button', { type: 'button', 'aria-label': 'Function activate' }, [centerShape]);
+  centerBtn.style.cssText = abs + 'left:' + pct(G.CX, G.W) + ';top:' + pct(G.CY, G.H) + ';width:32px;height:32px;margin:-16px 0 0 -16px;padding:0;border:0;background:transparent;cursor:pointer;display:flex;align-items:center;justify-content:center';
+  centerBtn.addEventListener('click', function () { state.sel = null; state.hov = null; draw(); });
+  var centerLabel = el('span', { 'class': 'glabel', text: 'activate' });
+  centerLabel.style.cssText = abs + 'left:50%;top:50%;transform:translate(-50%,18px);font-family:"JetBrains Mono",monospace;font-size:12px;font-weight:600;color:var(--fg);pointer-events:none';
+
+  ['edge', 'arrow', 'label', 'btn'].forEach(function (k) {
+    nodes.forEach(function (nd) { stage.appendChild(nd[k]); });
+  });
+  stage.appendChild(centerBtn);
+  stage.appendChild(centerLabel);
+
+  var infoKind = document.getElementById('infoKind');
+  var infoName = document.getElementById('infoName');
+  var infoRows = document.getElementById('infoRows');
+  var infoSource = document.getElementById('infoSource');
+  var infoHint = document.getElementById('infoHint');
+
+  function setInfo(cur) {
+    var rows = cur ? [['Called by', 'activate']] : [
+      ['File', 'extensions/vscode/src/extension.ts'], ['Lines', '79-444'], ['Complexity', '67'], ['Called by', '0'], ['Calls', '44']
+    ];
+    infoKind.textContent = cur ? (cur.kind === 'c' ? 'CLASS' : 'FUNCTION') : 'FUNCTION';
+    infoName.textContent = cur ? cur.name : 'activate';
+    infoRows.textContent = '';
+    rows.forEach(function (r) {
+      infoRows.appendChild(el('div', { style: 'display:flex;gap:12px' }, [
+        el('span', { text: r[0], style: 'flex:0 0 88px;color:var(--muted)' }),
+        el('span', { text: r[1], style: 'flex:1 1 auto;min-width:0;font-family:"JetBrains Mono",monospace;font-size:13px;color:var(--fg);overflow-wrap:anywhere' })
+      ]));
+    });
+    infoSource.style.display = cur ? 'none' : '';
+    infoHint.textContent = cur ? 'Tap the center node to go back to activate.' : 'Hover or tap a node to inspect it.';
+    if (!cur) lockPanelHeight();
+  }
+
+  // The panel holds less for a callee than for activate: it keeps the height
+  // of activate's (the tallest), or the row, the graph included, would
+  // shrink and grow as the pointer moves over the nodes.
+  var infoPanel = document.getElementById('infoPanel');
+  function lockPanelHeight() {
+    infoPanel.style.minHeight = '';
+    infoPanel.style.minHeight = infoPanel.offsetHeight + 'px';
+  }
+  window.addEventListener('resize', function () {
+    if (!(state.hov || state.sel)) lockPanelHeight();
+    else infoPanel.style.minHeight = '';
+  });
+
+  var lastInfo = '__';
+  function draw() {
+    var focus = state.hov || state.sel;
+    var amp = animate ? 3 * Math.min(1, Math.max(0, (time - 2) / 2)) : 0;
+    nodes.forEach(function (nd) {
+      var px = nd.x + Math.sin(time * 0.9 + nd.ph) * amp;
+      var py = nd.y + Math.cos(time * 0.7 + nd.ph * 1.3) * amp;
+      var dx = px - G.CX, dy = py - G.CY;
+      var len = Math.max(1, Math.sqrt(dx * dx + dy * dy));
+      var rot = Math.atan2(dy, dx) * 180 / Math.PI;
+      var on = focus === nd.id, faded = focus && !on;
+      var color = on ? 'var(--accent)' : 'var(--g-edge)';
+      var op = faded ? 0.15 : (nd.heur ? 0.55 : 0.85);
+      nd.edge.style.cssText = abs + 'left:' + pct(G.CX, G.W) + ';top:' + pct(G.CY, G.H) + ';width:' + pct(len, G.W) + ';height:0;border-top:1px ' + (nd.heur ? 'dashed' : 'solid') + ' ' + color + ';transform-origin:0 0;transform:rotate(' + rot.toFixed(2) + 'deg);opacity:' + op + ';pointer-events:none';
+      var k = 1 - 15 / len;
+      nd.arrow.style.cssText = abs + 'left:' + pct(G.CX + dx * k, G.W) + ';top:' + pct(G.CY + dy * k, G.H) + ';width:6px;height:6px;border-top:1.5px solid ' + color + ';border-right:1.5px solid ' + color + ';transform:translate(-50%,-50%) rotate(' + (rot + 45).toFixed(2) + 'deg);opacity:' + op + ';pointer-events:none';
+      nd.btn.style.left = pct(px, G.W);
+      nd.btn.style.top = pct(py, G.H);
+      var size = on ? 14 : 11;
+      nd.shape.style.cssText = 'display:block;width:' + size + 'px;height:' + size + 'px;border-radius:' + (nd.kind === 'c' ? '2px' : '50%') + ';background:var(--g-node);opacity:' + (faded ? 0.3 : 1) + (on ? ';box-shadow:0 0 0 3px var(--g-halo)' : '');
+      nd.label.style.cssText = abs + 'left:' + pct(px, G.W) + ';top:' + pct(py, G.H) + ';transform:' + nd.tf + ';white-space:nowrap;pointer-events:none;font-family:"JetBrains Mono",monospace;font-size:11.5px;line-height:14px;color:' + (on ? 'var(--fg)' : 'var(--fg-2)') + ';opacity:' + (faded ? 0.3 : 1) + (on ? ';display:block' : '');
+    });
+    centerShape.style.cssText = 'display:block;width:18px;height:18px;border-radius:50%;background:var(--g-center);box-shadow:0 0 0 ' + (focus ? 3 : 5) + 'px var(--g-halo)';
+    if (focus !== lastInfo) {
+      lastInfo = focus;
+      setInfo(nodes.filter(function (n) { return n.id === focus; })[0] || null);
+    }
+  }
+
+  draw();
+  if (animate) {
+    var t0 = performance.now(), last = t0;
+    var tick = function (now) {
+      if (now - last >= 32) {
+        var dt = Math.min(0.05, (now - last) / 1000);
+        last = now;
+        time = (now - t0) / 1000;
+        nodes.forEach(function (nd, i) {
+          if (time < i * 0.03) return;
+          nd.vx += (60 * (nd.tx - nd.x) - 9 * nd.vx) * dt;
+          nd.vy += (60 * (nd.ty - nd.y) - 9 * nd.vy) * dt;
+          nd.x += nd.vx * dt;
+          nd.y += nd.vy * dt;
+        });
+        draw();
+      }
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  }
+})();
+
+</script>
+</body>
+</html>

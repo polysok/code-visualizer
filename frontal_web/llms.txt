@@ -1,0 +1,21 @@
+# Code Visualizer
+
+> Code Visualizer is a free, open-source (MIT) desktop app for macOS, Windows and Linux that shows the dependency graph of a code repository: the callers, callees and inheritance of any function, class or file, one tab per repository. IDE extensions (VS Code, Cursor, JetBrains IDEs, Zed) link the graph to the code in both directions. Everything runs locally: no account, no server.
+
+## Key facts
+
+- Languages: Python, JavaScript, TypeScript (TSX), Java, C#, C, C++, Go, Rust, Swift, Kotlin, Scala, PHP, Ruby, Dart, Elixir, Haskell, Lua, Perl, Solidity, Vue, Svelte, HTML, CSS, HCL (Terraform), Emacs Lisp.
+- Calls resolved through the receiver's declared type in C#, Rust, TypeScript and Swift.
+- Changes view: compares the current state with a target branch (added, modified, moved, renamed, deleted artifacts).
+- Live updates while editing; two-stage first index for large repositories.
+- Natural-language search with a local embedding model; optional LLM (Ollama, LM Studio, any OpenAI-compatible server).
+- MCP server for AI coding agents (Claude Code, Cursor, VS Code, Codex...): search code, walk callers and callees, read a symbol's code; `cviz mcp setup` configures the agent.
+- Embedded graph database (LadybugDB), one index per repository in `.code-visualizer/`.
+- A fork of CodeGraphContext (MIT), maintained separately.
+
+## Links
+
+- [Source code and documentation](https://github.com/polysok/code-visualizer)
+- [Downloads (desktop app, IDE extension, command line)](https://github.com/polysok/code-visualizer/releases/latest)
+- [Report an issue](https://github.com/polysok/code-visualizer/issues)
+- [Author: Poly Sok](https://www.linkedin.com/in/poly-sok/)
