@@ -188,6 +188,10 @@ class SearchEngine:
                 except EmbeddingError as exc:
                     result["mode"] = "keyword"
                     result["warning"] = f"semantic search unavailable ({exc}): keyword search only"
+                except Exception:  # noqa: BLE001 - index dropped meanwhile (indexer.embed_pending)
+                    semantic_rows = []
+                    result["mode"] = "keyword"
+                    result["warning"] = "vector index being rebuilt: keyword search only"
             exact_rows = graph_index.named(session, code_identifiers(query), prefix)
 
         rows: Dict[str, Dict[str, Any]] = {}

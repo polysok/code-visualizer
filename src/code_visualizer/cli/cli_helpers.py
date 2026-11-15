@@ -752,8 +752,9 @@ def graph_helper(
     set_index_services(graph_builder, watcher, ctx.cvizignore_path, getattr(ctx, "repo_root", "") or None)
     # Vectors the index left out (cviz index without --embed) are computed
     # in the background; open pages show the progress on the live badge.
-    from ..viz.ai_api import catch_up_vectorization
+    from ..viz.ai_api import catch_up_vectorization, watch_embed_model
 
+    watch_embed_model()  # a model changed from another repository's page applies here too
     if deferred:
         # Staged first index: the rest of the repository is indexed in the
         # background, then vectorized.

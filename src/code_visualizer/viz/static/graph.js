@@ -1010,7 +1010,11 @@
     saveSettings(settings);
     if (state.selected) select(state.selected);
     connectEvents();
-    if (aiDirty) saveAiSettings().then((ok) => toast(ok ? "Settings saved" : "Settings saved (AI settings not saved)"));
+    if (aiDirty) saveAiSettings().then((res) => toast(
+      !res ? "Settings saved (AI settings not saved)"
+        : res.revectorizing ? "Settings saved: every repository is vectorized again with the new model"
+        : res.model_changed ? "Settings saved: click Vectorize now to compute the vectors of the new model"
+        : "Settings saved"));
     else toast("Settings saved");
   });
 
@@ -1053,7 +1057,12 @@
 
   function describeEmbedState() {
     const el = $("ai-embed-state");
-    if (!aiStatus) { el.textContent = "AI settings unavailable on this server."; return; }
+    $("ai-embed-run").disabled = !aiStatus || embedRunning;
+    if (!aiStatus) {
+      el.textContent = live ? "AI settings unavailable on this server."
+        : "The cviz server does not answer (stopped?): close and reopen this repository.";
+      return;
+    }
     if (embedRunning) return;
     const s = aiStatus.stats || { items: 0, embedded: 0 };
     let text = `${s.embedded} / ${s.items} artifacts vectorized · ${aiStatus.embed_model}`;
@@ -1068,6 +1077,41 @@
     document.querySelectorAll('.ai-remote[data-for="embed"]').forEach((el) => { el.hidden = !remote; });
     $("ai-embed-model").placeholder = remote ? "e.g. text-embedding-nomic-embed-text-v1.5" : "Xenova/multilingual-e5-small";
     $("ai-embed-load").hidden = !remote;
+  }
+
+  // Another embedding model: every vector is computed again (saveAiSettings
+  // makes the server stop the running vectorization and start over).
+  const DEFAULT_LOCAL_EMBED = "Xenova/multilingual-e5-small";
+  function embedModelChanged() {
+    if (!aiStatus || !aiStatus.embed_model) return false;
+    const provider = $("ai-embed-provider").value;
+    const model = $("ai-embed-model").value.trim() || (provider === "local" ? DEFAULT_LOCAL_EMBED : "");
+    return `${provider}:${model}` !== aiStatus.embed_model;
+  }
+  function updateEmbedChangeWarning() {
+    const el = $("ai-embed-change");
+    if (!embedModelChanged()) { el.hidden = true; return; }
+    const items = (aiStatus.stats && aiStatus.stats.items) || 0;
+    const running = embedRunning || !!(aiStatus.job && aiStatus.job.running);
+    let text = "Another embedding model: every repository is vectorized again from scratch"
+      + (items ? ` (${items.toLocaleString()} artifacts)` : "") + ".";
+    if (running) text += " The vectorization running now is stopped.";
+    text += $("ai-enabled").checked ? " It starts when you save; until it ends, the search uses keywords only."
+      : " Then click Vectorize now.";
+    el.textContent = text;
+    el.hidden = false;
+  }
+  ["ai-embed-provider", "ai-embed-model", "ai-enabled"].forEach((id) => {
+    $(id).addEventListener("input", updateEmbedChangeWarning);
+    $(id).addEventListener("change", updateEmbedChangeWarning);
+  });
+  function showVectorizationStarting() {
+    embedRunning = true;
+    $("ai-embed-run").disabled = true;
+    $("ai-embed-state").textContent = "Vectorizing… preparing";
+    const bar = $("ai-embed-progress");
+    bar.removeAttribute("value"); bar.hidden = false;  // indeterminate until embed:progress
+    if (!embedBadge) setEmbedBadge("vectorizing…");
   }
 
   async function fillAiSettings() {
@@ -1086,6 +1130,7 @@
     $("ai-llm-key").placeholder = c.CHAT_LLM_API_KEY_SET ? "saved (type to replace)" : "none";
     syncAiFieldVisibility();
     describeEmbedState();
+    updateEmbedChangeWarning();
     aiDirty = false;
   }
 
@@ -1105,18 +1150,21 @@
     return v;
   }
 
+  // The server's answer ({config, model_changed?, revectorizing?}), or null.
   async function saveAiSettings() {
     try {
-      await post("/api/ai/config", aiValues());
+      const res = (await post("/api/ai/config", aiValues())) || {};
       aiDirty = false;
       $("ai-readonly").hidden = true;
       await refreshAiStatus();
-      describeEmbedState();
-      return true;
+      if (res.revectorizing) showVectorizationStarting();
+      else describeEmbedState();
+      updateEmbedChangeWarning();
+      return res;
     } catch (e) {
       if (/this machine/i.test(e.message)) $("ai-readonly").hidden = false;
       setStatus(`AI settings not saved: ${e.message}`, true);
-      return false;
+      return null;
     }
   }
 
@@ -1151,12 +1199,14 @@
   $("ai-embed-load").addEventListener("click", () => loadModels("embed"));
 
   $("ai-embed-run").addEventListener("click", async () => {
-    if (aiDirty && !(await saveAiSettings())) return;
+    if (aiDirty) {
+      const res = await saveAiSettings();
+      if (!res) return;
+      if (res.revectorizing) return;  // the new model's vectorization runs already
+    }
     try {
       await post("/api/ai/embed", {});
-      embedRunning = true;
-      $("ai-embed-run").disabled = true;
-      $("ai-embed-state").textContent = "Vectorizing…";
+      showVectorizationStarting();
     } catch (e) { toast(e.message); }
   });
 
@@ -1166,7 +1216,8 @@
       embedRunning = true;
       setEmbedBadge(`vectorizing ${ev.done} / ${ev.total}`);
       bar.hidden = false; bar.max = ev.total || 1; bar.value = ev.done || 0;
-      $("ai-embed-state").textContent = `Vectorizing… ${ev.done} / ${ev.total}`;
+      $("ai-embed-state").textContent = ev.done ? `Vectorizing… ${ev.done} / ${ev.total}`
+        : `Vectorizing… loading the model (${ev.total} artifacts)`;
       $("ai-embed-run").disabled = true;
     } else if (ev.type === "embed:done") {
       bar.hidden = true;
@@ -1178,7 +1229,7 @@
         describeEmbedState();
       });
       settle();
-      if (ev.error) toast(`Vectorization: ${ev.error}`);
+      if (ev.error && ev.error !== "stopped") toast(`Vectorization: ${ev.error}`);
     }
   }
 
@@ -1497,7 +1548,18 @@
     if (settings.apiKey) url.searchParams.set("api_key", settings.apiKey);
     source = new EventSource(url);
     source.addEventListener("open", () => { live = true; updateLive(); });
-    source.addEventListener("error", () => { live = false; updateLive(); });
+    source.addEventListener("error", () => {
+      live = false;
+      // The server stopped mid-vectorization: no embed:done will come.
+      if (embedRunning) {
+        embedRunning = false;
+        $("ai-embed-progress").hidden = true;
+        $("ai-embed-run").disabled = false;
+        $("ai-embed-state").textContent = "Vectorization interrupted: the server stopped.";
+        embedBadge = "";
+      }
+      updateLive();
+    });
     source.addEventListener("graph:changed", (e) => onGraphEvent(JSON.parse(e.data)));
     source.addEventListener("index:done", (e) => {
       const ev = JSON.parse(e.data);

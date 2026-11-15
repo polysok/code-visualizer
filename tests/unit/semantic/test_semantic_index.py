@@ -5,6 +5,17 @@ from code_visualizer.semantic import embedders, indexer, settings
 from code_visualizer.semantic import graph_index
 
 
+class SpreadEmbedder:
+    """Distinct vectors of ``dim`` derived from a hash of the text."""
+
+    def __init__(self, dim=16):
+        self.dim = dim
+
+    def embed_documents(self, texts):
+        import hashlib
+        return [[b / 255 + 0.01 for b in hashlib.sha256(t.encode()).digest()[:self.dim]] for t in texts]
+
+
 class FakeEmbedder:
     """Deterministic vectors of ``dim`` from the text length; counts calls."""
 
@@ -77,6 +88,37 @@ def test_sync_writes_search_data_into_the_graph_and_embeds_only_changes(graph, m
     assert {h["name"] for h in hits} == {"computeDiscount", "sendEmail", "Invoice"}
 
 
+def test_new_artifact_is_embedded_without_crashing_the_indexed_table(graph, monkeypatch):
+    """LadybugDB crashes (SIGSEGV) when a vector is set on an indexed node that
+    had none: the index is dropped for such writes, then rebuilt."""
+    def add(prefix, count):  # enough nodes for the HNSW insert to prune neighbours
+        with graph.session() as s:
+            s.run("UNWIND $rows AS row MERGE (f:Function {uid: row.uid}) SET f.name = row.name, "
+                  "f.path = '/r/many.py', f.line_number = row.line, f.source = 'def ' + row.name + '(): pass'",
+                  rows=[{"uid": f"{prefix}{i}", "name": f"{prefix}fn{i}", "line": i} for i in range(count)])
+
+    emb = SpreadEmbedder()
+    add("old", 400)
+    result = _sync(graph, emb, monkeypatch)
+    if result["error"] and "extension" in result["error"]:
+        pytest.skip(result["error"])
+    add("new", 600)
+    with graph.session() as s:
+        s.run("MERGE (f:Function {uid: 'n'}) SET f.name = 'refundOrder', f.path = '/r/n.py', "
+              "f.line_number = 1, f.source = 'def refundOrder(): pass'")
+    assert _sync(graph, emb, monkeypatch)["embedded"] == 601
+    with graph.session() as s:
+        assert graph_index.search_ready(s) == {"keyword": True, "vector": True}
+        assert graph_index.stats(s, "openai:m1") == {"items": 1004, "embedded": 1004}
+        assert graph_index.vector_candidates(s, [0.5] * 16, "openai:m1", 5)
+        # Stopped between the drop and the rebuild: the next sync rebuilds it.
+        graph_index.drop_vector_indexes(s)
+        assert graph_index.indexed_dim(s) == 16
+    _sync(graph, emb, monkeypatch)
+    with graph.session() as s:
+        assert graph_index.active_dim(s) == 16
+
+
 def test_sync_without_embedder_keeps_keyword_search(graph, monkeypatch):
     monkeypatch.setattr(indexer, "probe", lambda _s: "fastembed is not installed")
     result = _sync(graph, FakeEmbedder(), monkeypatch)
@@ -143,7 +185,42 @@ def test_openai_compatible_embedder_batches_and_normalises(monkeypatch):
     assert calls[0][0] == "http://h/v1/embeddings" and calls[0][2] == "Bearer k"
 
 
-def test_settings_save_validates_and_keeps_secrets(monkeypatch, tmp_path):
+@pytest.fixture
+def ai_env():
+    """settings.save() writes the AI keys into os.environ: restore them after the test."""
+    import os
+
+    saved = {key: os.environ.get(key) for key in settings.DEFAULTS}
+    yield
+    for key, value in saved.items():
+        if value is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = value
+
+
+def test_ai_settings_are_not_frozen_into_the_environment(ai_env, monkeypatch, tmp_path):
+    """The CLI copies its configuration into the environment, which wins over the
+    file: the AI search settings stay out, so a save from the page applies to
+    every running server."""
+    import os
+    from code_visualizer.cli import main as cli_main
+
+    home = tmp_path / "home"
+    (home / ".code-visualizer").mkdir(parents=True)
+    (home / ".code-visualizer" / ".env").write_text(
+        "SEARCH_EMBED_MODEL=nomic\nCVIZ_TEST_OTHER_KEY=1\n", encoding="utf-8")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("SEARCH_EMBED_MODEL", raising=False)
+    monkeypatch.setenv("CVIZ_TEST_OTHER_KEY", "")
+    monkeypatch.delenv("CVIZ_TEST_OTHER_KEY")
+    cli_main._load_credentials()
+    assert "SEARCH_EMBED_MODEL" not in os.environ
+    assert os.environ.get("CVIZ_TEST_OTHER_KEY") == "1"
+
+
+def test_settings_save_validates_and_keeps_secrets(ai_env, monkeypatch, tmp_path):
     from code_visualizer.cli import config_manager
 
     monkeypatch.setattr(config_manager, "CONFIG_DIR", tmp_path)
@@ -178,3 +255,56 @@ def test_same_uid_in_two_labels_is_written_to_each_label(graph, monkeypatch):
             "MATCH (n) WHERE n.uid = 'a' RETURN n.name AS n, n.search_text AS t").data()}
     assert texts["computeDiscount"].startswith("compute discount")
     assert texts["Collide"].startswith("collide")
+
+
+def test_syncs_never_run_at_the_same_time(monkeypatch):
+    """A sync rebuilding the vector index while another writes vectors
+    without it crashes the database: syncs are serialized."""
+    import threading
+    import time
+
+    active, overlaps = [0], []
+
+    def slow(*_a, **_k):
+        active[0] += 1
+        overlaps.append(active[0])
+        time.sleep(0.05)
+        active[0] -= 1
+        return {}
+
+    monkeypatch.setattr(indexer, "_sync", slow)
+    threads = [threading.Thread(target=indexer.sync, args=(None, "/r")) for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert overlaps == [1, 1, 1, 1]
+
+
+def test_a_stopped_vectorization_keeps_its_vectors_and_the_index(graph, monkeypatch):
+    """Changing the embedding model stops the running vectorization between two
+    batches: what was written stays, the vector index is rebuilt."""
+    import threading
+
+    def add(prefix, count):
+        with graph.session() as s:
+            s.run("UNWIND $rows AS row MERGE (f:Function {uid: row.uid}) SET f.name = row.name, "
+                  "f.path = '/r/many.py', f.line_number = row.line, f.source = 'def ' + row.name + '(): pass'",
+                  rows=[{"uid": f"{prefix}{i}", "name": f"{prefix}fn{i}", "line": i} for i in range(count)])
+
+    result = _sync(graph, SpreadEmbedder(), monkeypatch)
+    if result["error"] and "extension" in result["error"]:
+        pytest.skip(result["error"])
+    add("new", 200)
+    stop = threading.Event()
+
+    class StopAfterFirstBatch(SpreadEmbedder):
+        def embed_documents(self, texts):
+            stop.set()
+            return super().embed_documents(texts)
+
+    result = _sync(graph, StopAfterFirstBatch(), monkeypatch, stop=stop)
+    assert result["error"] == indexer.STOPPED
+    with graph.session() as s:
+        assert graph_index.search_ready(s)["vector"]
+        assert graph_index.stats(s, "openai:m1")["embedded"] == 3 + indexer.EMBED_CHUNK

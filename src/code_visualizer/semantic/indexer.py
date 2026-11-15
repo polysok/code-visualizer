@@ -36,7 +36,7 @@ MAX_FALLBACK_LINES = 120     # source read from disk when the graph has none
 NAME_WEIGHT = 3              # the name's words count as many times in BM25
 EMBED_CHUNK = 64             # texts per embedding call / write / progress event
 
-_running = threading.Lock()  # one vectorization at a time per process
+_running = threading.Lock()  # one sync at a time per process (see sync)
 
 ProgressFn = Callable[[int, int], None]
 
@@ -161,54 +161,76 @@ def store_keywords(session, artifacts: Sequence[Artifact]) -> int:
     return len(changed)
 
 
+class EmbeddingStopped(EmbeddingError):
+    """The vectorization was asked to stop (``stop`` event), between two batches."""
+
+
+STOPPED = "stopped"
+
+
 def embed_pending(session_factory: Callable[[], Any], artifacts: Sequence[Artifact], repo: str,
                   embed_settings: ai_settings.EmbedSettings, progress: Optional[ProgressFn] = None,
-                  publish: bool = True) -> int:
+                  publish: bool = True, stop: Optional[threading.Event] = None) -> int:
     """Embed the artifacts whose stored hash does not match their text and model.
 
     Returns the number of texts actually embedded (vectors taken back from
-    the stash do not count)."""
+    the stash do not count). *stop* set: raises EmbeddingStopped before the
+    next batch (the vectors written so far are kept)."""
     model_id = embed_settings.model_id
     pending = [a for a in artifacts if a.stored_hash != text_hash(model_id, a.text)]
     if not pending:
         return 0
-    # Artifacts recreated with an unchanged text get their previous vector back.
-    reused = graph_index.take_stashed({text_hash(model_id, a.text) for a in pending})
-    if reused:
-        pairs = [(a, {"uid": a.uid, "hash": h, "vec": reused[h]})
-                 for a in pending if (h := text_hash(model_id, a.text)) in reused]
-        dim = len(pairs[0][1]["vec"])
-        with session_factory() as session:
-            graph_index.ensure_embedding_column(session, dim, model_id)
-            for label, label_rows in _by_label(pairs).items():
-                graph_index.write_vectors(session, label, dim, label_rows)
-        pending = [a for a in pending if text_hash(model_id, a.text) not in reused]
-        if not pending:
-            with session_factory() as session:
-                graph_index.ensure_indexes(session, dim)
-            return 0
-    embedder = get_embedder(embed_settings)
-    total, done, last_event, dim = len(pending), 0, 0.0, None
-    for i in range(0, total, EMBED_CHUNK):
-        chunk = pending[i:i + EMBED_CHUNK]
-        vectors = embedder.embed_documents([a.text for a in chunk])
-        pairs = [(a, {"uid": a.uid, "hash": text_hash(model_id, a.text), "vec": [float(x) for x in v]})
-                 for a, v in zip(chunk, vectors)]
+    # A node without a vector of this model (created by an indexing run, or
+    # embedded by another model) cannot get one while it is indexed: the
+    # database crashes (graph_index.drop_vector_indexes). Changed texts of
+    # embedded nodes are updated in place, the index kept.
+    prefix = graph_index.model_prefix(model_id)
+    rebuild = any(not (a.stored_hash or "").startswith(prefix) for a in pending)
+    dim: Optional[int] = None
+
+    def write(pairs) -> None:
+        nonlocal dim
         with session_factory() as session:
             if dim is None:
                 dim = len(pairs[0][1]["vec"])
                 graph_index.ensure_embedding_column(session, dim, model_id)
+                if rebuild:
+                    graph_index.drop_vector_indexes(session)
             for label, label_rows in _by_label(pairs).items():
                 graph_index.write_vectors(session, label, dim, label_rows)
-        done += len(chunk)
-        if progress:
-            progress(done, total)
-        now = time.time()
-        if publish and (now - last_event > 1.0 or done == total):
-            _publish(EMBED_PROGRESS, repo, done=done, total=total, model=model_id)
-            last_event = now
-    with session_factory() as session:
-        graph_index.ensure_indexes(session, dim)
+
+    done = 0
+    try:
+        # Artifacts recreated with an unchanged text get their previous vector back.
+        reused = graph_index.take_stashed({text_hash(model_id, a.text) for a in pending})
+        if reused:
+            write([(a, {"uid": a.uid, "hash": h, "vec": reused[h]})
+                   for a in pending if (h := text_hash(model_id, a.text)) in reused])
+            pending = [a for a in pending if text_hash(model_id, a.text) not in reused]
+            if not pending:
+                return 0
+        total, last_event = len(pending), 0.0
+        if publish:  # loading the model can take a while: show the total now
+            _publish(EMBED_PROGRESS, repo, done=0, total=total, model=model_id)
+        embedder = get_embedder(embed_settings)
+        for i in range(0, total, EMBED_CHUNK):
+            if stop is not None and stop.is_set():
+                raise EmbeddingStopped(STOPPED)
+            chunk = pending[i:i + EMBED_CHUNK]
+            vectors = embedder.embed_documents([a.text for a in chunk])
+            write([(a, {"uid": a.uid, "hash": text_hash(model_id, a.text), "vec": [float(x) for x in v]})
+                   for a, v in zip(chunk, vectors)])
+            done += len(chunk)
+            if progress:
+                progress(done, total)
+            now = time.time()
+            if publish and (now - last_event > 1.0 or done == total):
+                _publish(EMBED_PROGRESS, repo, done=done, total=total, model=model_id)
+                last_event = now
+    finally:
+        if dim is not None:
+            with session_factory() as session:
+                graph_index.ensure_indexes(session, dim)
     return done
 
 
@@ -223,13 +245,26 @@ def _is_dependency_repo(session, repo: str) -> bool:
 
 def sync(session_factory: Callable[[], Any], repo: str, paths: Optional[Sequence[str]] = None,
          embed_settings: Optional[ai_settings.EmbedSettings] = None,
-         progress: Optional[ProgressFn] = None, publish: bool = True) -> Dict[str, Any]:
+         progress: Optional[ProgressFn] = None, publish: bool = True,
+         stop: Optional[threading.Event] = None) -> Dict[str, Any]:
     """Refresh the search data of ``repo`` (or of ``paths``) in the graph.
 
     Returns ``{"repo", "items", "embedded", "error"}``. Failures are reported,
     not raised: indexing must not fail because of the search. Without a
     usable embedding model the keyword search is still kept up to date.
+
+    One sync at a time per process: a vectorization writes vectors with the
+    vector index dropped (embed_pending), and a sync of a saved file running
+    meanwhile would rebuild the index under it, which crashes the database.
     """
+    with _running:
+        return _sync(session_factory, repo, paths, embed_settings, progress, publish, stop)
+
+
+def _sync(session_factory: Callable[[], Any], repo: str, paths: Optional[Sequence[str]],
+          embed_settings: Optional[ai_settings.EmbedSettings],
+          progress: Optional[ProgressFn], publish: bool,
+          stop: Optional[threading.Event] = None) -> Dict[str, Any]:
     repo = _norm(repo).rstrip("/")
     paths = [_norm(p) for p in paths] if paths is not None else None
     embed_settings = embed_settings or ai_settings.embed_settings()
@@ -241,15 +276,14 @@ def sync(session_factory: Callable[[], Any], repo: str, paths: Optional[Sequence
             rows = graph_index.collect(session, repo + "/", paths)
             artifacts = to_artifacts(rows, repo, include_dependencies=_is_dependency_repo(session, repo))
             store_keywords(session, artifacts)
-            graph_index.ensure_indexes(session, graph_index.active_dim(session))
+            graph_index.ensure_indexes(session, graph_index.indexed_dim(session))
         result["items"] = len(artifacts)
         problem = probe(embed_settings)
         if problem:
             result["error"] = problem
         else:
-            with _running:
-                result["embedded"] = embed_pending(session_factory, artifacts, repo, embed_settings,
-                                                   progress, publish)
+            result["embedded"] = embed_pending(session_factory, artifacts, repo, embed_settings,
+                                               progress, publish, stop)
     except (EmbeddingError, graph_index.SearchIndexError) as exc:
         result["error"] = str(exc)
     finally:

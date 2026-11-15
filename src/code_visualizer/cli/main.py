@@ -309,7 +309,7 @@ def _load_credentials(cli_context_flag: Optional[str] = None):
     # by the one sitting in ~/.code-visualizer/.env
     for key, value in merged_config.items():
         if value is not None:  # Only set non-None values
-            if key in runtime_env:
+            if key in runtime_env or key in AI_SETTINGS:
                 continue
             if "PATH" in key:
                 value = normalize_config_path(str(value), absolute=True)
@@ -323,6 +323,11 @@ def _load_credentials(cli_context_flag: Optional[str] = None):
             console.print(f"[dim]Loaded configuration from: {', '.join(config_source_names)}[/dim]")
     else:
         console.print("[yellow]No configuration file found. Using defaults.[/yellow]")
+    # The AI search settings stay in the file: the graph page changes them while
+    # the servers run (one per repository), and the environment would win over
+    # the file and keep the start-up values.
+    from code_visualizer.semantic.settings import DEFAULTS as AI_SETTINGS
+
 
     default_db_sources = list(key_defined_in.get("DEFAULT_DATABASE", []))
     if "DEFAULT_DATABASE" in runtime_env:

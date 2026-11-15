@@ -75,6 +75,7 @@ def api_chat(request: Request, body: ChatBody):
 
 _embed_job: Dict[str, Any] = {"running": False, "last": None}
 _embed_lock = threading.Lock()
+_embed_stop = threading.Event()  # set: the running vectorization stops at its next batch
 
 
 @router.get("/api/ai/status")
@@ -108,12 +109,22 @@ def api_ai_status(request: Request) -> Dict[str, Any]:
 
 @router.post("/api/ai/config")
 def api_ai_config(request: Request, body: Dict[str, Optional[str]]):
+    """Save the AI settings. Another embedding model means other vectors: the
+    running vectorization is stopped and every repository is vectorized again
+    (when the search is on and the model usable)."""
     _guard_local_write(request)
+    note_embed_model()
     try:
         ai_settings.save(body)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    return {"config": ai_settings.public_config()}
+    result: Dict[str, Any] = {"config": ai_settings.public_config()}
+    started = apply_model_change()
+    if started is not None:
+        result["model_changed"] = True
+        if started:
+            result["revectorizing"] = started
+    return result
 
 
 class ModelsBody(BaseModel):
@@ -144,7 +155,9 @@ def _run_embed(repos: List[str]) -> None:
     results = []
     try:
         for repo in repos:
-            results.append(sync(_session, repo))
+            if _embed_stop.is_set():
+                break
+            results.append(sync(_session, repo, stop=_embed_stop))
     except Exception as exc:  # noqa: BLE001
         results.append({"repo": None, "error": str(exc)})
     finally:
@@ -158,8 +171,68 @@ def _start_embed(repos: List[str]) -> bool:
         if _embed_job["running"]:
             return False
         _embed_job.update(running=True, last=None)
+        _embed_stop.clear()
     threading.Thread(target=_run_embed, args=(repos,), name="cviz-embed", daemon=True).start()
     return True
+
+
+def stop_embed(timeout: float = 120.0) -> bool:
+    """Stop the running vectorization (at its next batch); True once none runs."""
+    _embed_stop.set()
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        with _embed_lock:
+            if not _embed_job["running"]:
+                return True
+        time.sleep(0.2)
+    return False
+
+
+_model_seen: Dict[str, Optional[str]] = {"id": None}
+_model_lock = threading.Lock()
+
+
+def note_embed_model() -> None:
+    """Remember the current embedding model (the reference of apply_model_change)."""
+    with _model_lock:
+        if _model_seen["id"] is None:
+            _model_seen["id"] = ai_settings.embed_settings().model_id
+
+
+def apply_model_change() -> Optional[List[str]]:
+    """Another embedding model than the one seen last means other vectors: stop
+    the running vectorization and vectorize every repository again (when the
+    search is on and the model usable). Returns the repositories being
+    vectorized again, [] when the model changed but nothing started, None when
+    it did not change."""
+    embed = ai_settings.embed_settings()
+    with _model_lock:
+        previous, _model_seen["id"] = _model_seen["id"], embed.model_id
+    if previous is None or previous == embed.model_id:
+        return None
+    if _embed_job["running"] and not stop_embed():
+        return []
+    if not ai_settings.enabled() or probe(embed):
+        return []
+    repos = indexed_repo_roots(max_age=0)
+    return repos if repos and _start_embed(repos) else []
+
+
+def watch_embed_model(interval: float = 5.0) -> None:
+    """Follow changes of the embedding model made elsewhere (the page of another
+    repository's server, cviz config set): they apply to this server too."""
+    note_embed_model()
+
+    def _loop() -> None:
+        while True:
+            time.sleep(interval)
+            try:
+                apply_model_change()
+            except Exception as exc:  # noqa: BLE001 - keep watching
+                from ..utils.debug_log import warning_logger
+                warning_logger(f"[SEARCH] embedding model check failed: {exc}")
+
+    threading.Thread(target=_loop, name="cviz-embed-model", daemon=True).start()
 
 
 def repos_to_vectorize() -> List[str]:

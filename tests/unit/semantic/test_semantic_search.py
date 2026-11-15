@@ -203,3 +203,79 @@ def test_keyword_corpus_follows_text_writes(driver):
         assert [r["name"] for r in graph_index.keyword_candidates(s, "zebra", 5)] == ["render_navbar"]
         s.run_native("MATCH (f:Function {uid: 'u2'}) DETACH DELETE f")
         assert graph_index.keyword_candidates(s, "zebra", 5) == []  # deleted node drops out
+
+
+def test_vector_index_dropped_meanwhile_falls_back_to_keywords(engine, monkeypatch):
+    """A vectorization drops the vector index while it writes (indexer.embed_pending):
+    a search at that moment keeps its keyword results."""
+    from code_visualizer.semantic import graph_index
+
+    def dropped(*_a, **_k):
+        raise RuntimeError("Binder exception: index cviz_vec_Function_3 does not exist")
+
+    monkeypatch.setattr(graph_index, "vector_candidates", dropped)
+    r = engine.search("compute discount", embed_settings=EMBED)
+    assert r["mode"] == "keyword" and names(r)[0] == "compute_discount"
+
+
+def test_another_embedding_model_stops_the_running_vectorization_and_starts_over(monkeypatch):
+    from code_visualizer.semantic.settings import EmbedSettings
+    from code_visualizer.viz import ai_api
+
+    models = iter([EmbedSettings("local", "a", "", ""), EmbedSettings("openai", "b", "http://x", "")])
+    current = {"m": next(models)}
+    monkeypatch.setattr(ai_api, "_guard_local_write", lambda request: None)
+    monkeypatch.setattr(ai_api.ai_settings, "save", lambda body: current.update(m=next(models)))
+    monkeypatch.setattr(ai_api.ai_settings, "embed_settings", lambda: current["m"])
+    monkeypatch.setattr(ai_api.ai_settings, "public_config", lambda: {})
+    monkeypatch.setattr(ai_api.ai_settings, "enabled", lambda: True)
+    monkeypatch.setattr(ai_api, "probe", lambda _s: None)
+    monkeypatch.setattr(ai_api, "indexed_repo_roots", lambda max_age=0: ["/r", "/s"])
+    monkeypatch.setitem(ai_api._model_seen, "id", None)
+    events = []
+    monkeypatch.setitem(ai_api._embed_job, "running", True)
+    monkeypatch.setattr(ai_api, "stop_embed", lambda: events.append("stop") or True)
+    monkeypatch.setattr(ai_api, "_start_embed", lambda repos: events.append(repos) or True)
+
+    result = ai_api.api_ai_config(None, {"SEARCH_EMBED_PROVIDER": "openai"})
+    assert result["model_changed"] and result["revectorizing"] == ["/r", "/s"]
+    assert events == ["stop", ["/r", "/s"]]
+
+
+def test_stop_embed_waits_for_the_job_to_end(monkeypatch):
+    import threading
+    import time
+    from code_visualizer.viz import ai_api
+
+    monkeypatch.setitem(ai_api._embed_job, "running", True)
+
+    def job():
+        ai_api._embed_stop.wait(5)
+        time.sleep(0.1)
+        ai_api._embed_job["running"] = False
+
+    threading.Thread(target=job, daemon=True).start()
+    assert ai_api.stop_embed(timeout=5)
+    ai_api._embed_stop.clear()
+
+
+def test_a_model_changed_elsewhere_is_applied_once(monkeypatch):
+    """Another server's page (or cviz config set) changed the model: the
+    watcher applies it here; the same model again does nothing."""
+    from code_visualizer.semantic.settings import EmbedSettings
+    from code_visualizer.viz import ai_api
+
+    current = {"m": EmbedSettings("local", "a", "", "")}
+    monkeypatch.setattr(ai_api.ai_settings, "embed_settings", lambda: current["m"])
+    monkeypatch.setattr(ai_api.ai_settings, "enabled", lambda: True)
+    monkeypatch.setattr(ai_api, "probe", lambda _s: None)
+    monkeypatch.setattr(ai_api, "indexed_repo_roots", lambda max_age=0: ["/r"])
+    monkeypatch.setitem(ai_api._embed_job, "running", False)
+    monkeypatch.setitem(ai_api._model_seen, "id", None)
+    started = []
+    monkeypatch.setattr(ai_api, "_start_embed", lambda repos: started.append(repos) or True)
+    ai_api.note_embed_model()
+    assert ai_api.apply_model_change() is None
+    current["m"] = EmbedSettings("openai", "b", "http://x", "")
+    assert ai_api.apply_model_change() == ["/r"]
+    assert ai_api.apply_model_change() is None and started == [["/r"]]

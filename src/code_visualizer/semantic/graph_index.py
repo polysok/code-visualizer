@@ -15,7 +15,8 @@ Every code artifact node (``ARTIFACT_LABELS``) carries three properties:
                       model produced the vector and whether the text changed.
 
 The vector index is maintained by the database on every insert, update and
-delete (``QUERY_VECTOR_INDEX``). LadybugDB's ``fts`` index is not used: in
+delete (``QUERY_VECTOR_INDEX``), except that a vector set on a node that had
+none crashes it: such writes drop the index first (``drop_vector_indexes``). LadybugDB's ``fts`` index is not used: in
 0.19 it is corrupted by multi-row writes (one ``UNWIND ... CREATE``), after
 which deleting the nodes fails ("FTS index ... is inconsistent"), and a
 dropped one can leave an internal table that blocks its re-creation. The
@@ -126,6 +127,23 @@ def active_dim(session) -> Optional[int]:
     return None
 
 
+def indexed_dim(session) -> Optional[int]:
+    """Dimension to index: the active one, else that of the vectors stored
+    without an index (a process stopped between drop_vector_indexes and the
+    rebuild). Deactivated columns are cleared, so at most one holds values."""
+    dim = active_dim(session)
+    if dim is not None:
+        return dim
+    pattern = re.compile(r"^search_embedding_(\d+)$")
+    for label in SEARCH_LABELS:
+        for column in _columns(session, label):
+            match = pattern.match(column)
+            if match and _native(session, f"MATCH (n:`{label}`) WHERE n.{column} IS NOT NULL "
+                                          "RETURN n.uid AS uid LIMIT 1"):
+                return int(match.group(1))
+    return None
+
+
 def ensure_embedding_column(session, dim: int, model_id: str) -> bool:
     """Make ``search_embedding_<dim>`` the active vector column of every label.
 
@@ -133,7 +151,7 @@ def ensure_embedding_column(session, dim: int, model_id: str) -> bool:
     dropped, its vectors cleared and the hashes of other models reset, so the
     artifacts are re-embedded. Returns True when the active column changed.
     """
-    previous = active_dim(session)
+    previous = indexed_dim(session)
     column = embedding_column(dim)
     for label in SEARCH_LABELS:
         if column not in _columns(session, label):
@@ -215,6 +233,20 @@ def collect(session, prefix: Optional[str], paths: Optional[Sequence[str]] = Non
             )
         )
     return rows
+
+
+def drop_vector_indexes(session) -> None:
+    """Drop every vector index; ``ensure_indexes`` rebuilds them.
+
+    LadybugDB 0.19 crashes the process (SIGSEGV in the HNSW insert) when a
+    vector is set on a node that had none while its table is indexed: every
+    artifact created by an indexing run. Writing such vectors without the
+    index, then rebuilding it, avoids it (rebuild: ~2 s for 7,000 vectors).
+    """
+    for name in indexes(session):
+        match = _VEC_INDEX.match(name)
+        if match:
+            _native(session, f"CALL DROP_VECTOR_INDEX('{match.group(1)}', '{name}')")
 
 
 def write_texts(session, label: str, rows: Sequence[Dict[str, Any]]) -> None:
@@ -422,7 +454,7 @@ _stash_lock = threading.Lock()
 
 def stash_vectors(session, paths: Optional[Sequence[str]] = None, prefix: Optional[str] = None) -> int:
     """Keep the vectors of the artifacts in ``paths`` (or under ``prefix``)."""
-    dim = active_dim(session)
+    dim = indexed_dim(session)
     if dim is None:
         return 0
     column = embedding_column(dim)
