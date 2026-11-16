@@ -496,6 +496,7 @@
     const view = visibleGraph();
     state.viewNodes = view.nodes;
     state.viewLinks = view.links;
+    paintHitDots();
     const nodes = view.nodes;
     const links = view.links;
     updateHeuristicToggle();
@@ -1272,6 +1273,19 @@
       else el.appendChild(document.createTextNode(part));
     });
   }
+  // A hit's dot takes the colour of its node in the graph shown (center,
+  // caller, callee…), else the colour "+" adds it with (result); repainted
+  // on every render, as the graph changes under the conversation.
+  function hitNode(h) {
+    return (h.id && state.byId && state.byId.get(h.id))
+      || state.nodes.find((n) => n.path && n.path === h.path && n.name === h.name && (!h.line || !n.line || n.line === h.line));
+  }
+  function paintHitDot(dot) {
+    const n = hitNode(dot.hit);
+    dot.style.background = n ? nodeFill(n) : "var(--result)";
+    dot.title = n ? `In the graph: ${n.change ? changeText(n) : n.role}` : "Not in the graph";
+  }
+  function paintHitDots() { document.querySelectorAll(".hit .kdot").forEach(paintHitDot); }
   function hitTarget(h) { return { id: h.id, path: h.path, name: h.name, line: h.line, kind: h.kind }; }
   function hitList(hits, dimmed) {
     const ul = document.createElement("ul");
@@ -1279,7 +1293,8 @@
     hits.forEach((h) => {
       const li = document.createElement("li"); li.className = "hit";
       li.title = h.snippet || "";
-      const dot = document.createElement("i"); dot.className = "kdot";
+      const dot = document.createElement("i"); dot.className = "kdot"; dot.hit = h;
+      paintHitDot(dot);
       const name = document.createElement("button");
       name.type = "button"; name.className = "hname"; name.textContent = h.name;
       name.title = "Show in the graph (recentre)";

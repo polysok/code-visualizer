@@ -437,7 +437,7 @@ body.panel-open .chat-dock { --reserved: calc(min(var(--panel-w, 420px), 100vw -
 .hits.dimmed { opacity: .65; }
 .hit { display: flex; align-items: center; gap: 8px; padding: 3px 6px; border-radius: 6px; border: 1px solid transparent; }
 .hit:hover { border-color: var(--border); }
-.hit .kdot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--result); }
+.hit .kdot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--result); transition: background .2s; }
 .hit .hname { color: var(--text); cursor: pointer; background: none; border: 0; padding: 0; font: inherit; font-family: var(--font); text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .hit .hname:hover { color: var(--accent); text-decoration: underline; }
 .hit .hkind { color: var(--muted); font-size: 11px; flex: none; }
