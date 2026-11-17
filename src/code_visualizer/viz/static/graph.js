@@ -2198,8 +2198,27 @@
   $("about-close").addEventListener("click", () => $("about").close());
   $("about").addEventListener("click", (e) => { if (e.target === $("about")) $("about").close(); });  // click outside
 
+  // A newer release (asked by the server, once a day at most): a link to it
+  // beside the live badge. In the desktop app the system opens it.
+  async function checkUpdate() {
+    let info;
+    try { info = await api("/api/update"); } catch (_) { return; }  // older server, offline
+    if (!info || !info.available) return;
+    const pill = $("update-pill");
+    pill.textContent = `v${info.latest} available`;
+    pill.title = `Code Visualizer ${info.latest} is published (this one is ${info.current}): open the release page`;
+    pill.href = info.url;
+    pill.hidden = false;
+    pill.addEventListener("click", (e) => {
+      if (window.parent === window) return;
+      e.preventDefault();
+      window.parent.postMessage({ type: "cviz:open-url", url: info.url }, "*");
+    });
+  }
+
   async function init() {
     try { serverConfig = Object.assign(serverConfig, await api("/api/graph-config")); } catch (_) { /* older server */ }
+    checkUpdate();
     showRepo(serverConfig.repo);
     connectEvents();
     updateLive();

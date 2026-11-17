@@ -144,6 +144,9 @@ select option { color: var(--text); background: var(--surface); }
 .icon { background: none; border: 0; color: var(--muted); font-size: 20px; cursor: pointer; line-height: 1; }
 .live { display: inline-flex; align-items: center; gap: 6px; height: var(--control-h); box-sizing: border-box; background: none; border: 1px solid var(--border); border-radius: 999px; padding: 0 12px; color: var(--muted); cursor: pointer; font: inherit; transition: border-color .12s, color .12s; }
 .live:hover { border-color: var(--accent); color: var(--accent); }
+.update-pill { display: inline-flex; align-items: center; height: var(--control-h); box-sizing: border-box; padding: 0 12px; border: 1px solid var(--accent); border-radius: 999px; color: var(--accent); font-size: 12px; text-decoration: none; white-space: nowrap; }
+.update-pill:hover { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.update-pill[hidden] { display: none; }
 .live .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
 .live.on .dot { background: var(--callee); }
 .live.stale { border-color: var(--caller); color: var(--text); }

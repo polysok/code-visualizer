@@ -58,6 +58,9 @@ def _isolate_graph_events(tmp_path_factory, monkeypatch):
     # ... nor start the desktop app installed on the developer's machine.
     if "CVIZ_DESKTOP_LAUNCH" not in os.environ:
         monkeypatch.setenv("CVIZ_DESKTOP_LAUNCH", "0")
+    # No request to GitHub for the latest release (tests of it set it back).
+    if "CVIZ_NO_UPDATE_CHECK" not in os.environ:
+        monkeypatch.setenv("CVIZ_NO_UPDATE_CHECK", "1")
     # An MCP server built by a test must not start a real `cviz graph` in the
     # background (tests of that start-up set it back to 1).
     if "CVIZ_MCP_START_GRAPH" not in os.environ:

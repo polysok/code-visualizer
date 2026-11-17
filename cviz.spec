@@ -5,7 +5,7 @@
 import sys
 import os
 from pathlib import Path
-from PyInstaller.utils.hooks import collect_data_files, collect_submodules, collect_all
+from PyInstaller.utils.hooks import collect_data_files, collect_submodules, collect_all, copy_metadata
 
 block_cipher = None
 
@@ -33,6 +33,12 @@ search_paths = list(set([p for p in search_paths if p.exists()]))
 # ── 1. Component Lists (Binaries, Datas, Hidden Imports) ───────────────────
 binaries = []
 datas = []
+# The package's metadata: its version (About, /api/graph-config, the update
+# check, the desktop app's version check) is read from it.
+try:
+    datas += copy_metadata('code-visualizer')
+except Exception as exc:  # not installed in this environment: "0.0.0 (dev)"
+    print(f"cviz.spec: no code-visualizer metadata ({exc})")
 hidden_imports = [
     'code_visualizer',
     'code_visualizer.cli',

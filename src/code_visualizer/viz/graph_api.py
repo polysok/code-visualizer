@@ -180,6 +180,16 @@ def graph_asset(name: str):
     return FileResponse(asset, headers={"Cache-Control": "no-cache"})
 
 
+@router.get("/api/update")
+def update_info(request: Request):
+    """A newer release than this server's cviz, once a day at most (utils/update_check)."""
+    guard(request)
+    from ..utils.update_check import update_available
+
+    found = update_available()
+    return {"available": bool(found), **(found or {})}
+
+
 @router.get("/api/graph-config")
 def graph_config(request: Request):
     guard(request)
