@@ -68,6 +68,7 @@
         frame.src = `${t.url}${query}#cviz-storage=${encodeURIComponent(JSON.stringify(pageStore))}`;
         frame.title = `Dependency graph of ${t.name}`;
         t.view.appendChild(frame);
+        if (t.otherVersion) t.view.appendChild(versionBanner(t));
       }
       return;
     }
@@ -145,12 +146,34 @@
   // The time spent moves on between two lines.
   setInterval(() => tabs.forEach((t) => { if (t.state === "starting") renderProgress(t); }), 1000);
 
-  async function start(t) {
+  // The repository's server runs another version than the app's cviz (it
+  // was started from a terminal or an IDE): the app offers to restart it.
+  function versionBanner(t) {
+    const [theirs, mine] = t.otherVersion;
+    const bar = document.createElement("div");
+    bar.className = "version-banner";
+    bar.setAttribute("role", "status");
+    const text = document.createElement("span");
+    text.textContent = `This repository's graph server is cviz ${theirs}, started from a terminal or an IDE; the app's is ${mine}.`;
+    const restart = document.createElement("button");
+    restart.type = "button"; restart.className = "btn primary"; restart.textContent = `Restart it with ${mine}`;
+    restart.onclick = () => { t.otherVersion = null; t.view.innerHTML = ""; start(t, true); };
+    const close = document.createElement("button");
+    close.type = "button"; close.className = "close"; close.textContent = "×";
+    close.title = "Keep this server"; close.setAttribute("aria-label", "Keep this server");
+    close.onclick = () => { t.otherVersion = null; bar.remove(); };
+    bar.append(text, restart, close);
+    return bar;
+  }
+
+  async function start(t, restart) {
     t.state = "starting"; t.error = undefined; t.log = []; t.progress = null; t.startedAt = Date.now();
     renderTab(t); renderView(t);
     try {
-      const server = await invoke("open_repo", { path: t.path });
+      const server = await invoke("open_repo", { path: t.path, restart: !!restart });
       t.url = server.url; t.state = "ready";
+      // A server already running with another cviz (a terminal's, an IDE's).
+      t.otherVersion = server.other_version || null;
     } catch (e) {
       t.state = "error"; t.error = String(e);
     }

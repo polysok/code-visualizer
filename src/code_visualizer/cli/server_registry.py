@@ -167,12 +167,18 @@ def unregister(repo_root, pid: Optional[int] = None) -> None:
 
 def server_for(path) -> Optional[str]:
     """URL of the running server whose repository contains *path*."""
+    entry = entry_for(path)
+    return entry.get("url") if entry else None
+
+
+def entry_for(path) -> Optional[dict]:
+    """Registry entry (url, pid) of the running server whose repository contains *path*."""
     target = Path(path).expanduser().resolve().as_posix()
     best = None
     for repo, entry in servers().items():
         if target == repo or target.startswith(repo.rstrip("/") + "/"):
             if best is None or len(repo) > len(best[0]):
-                best = (repo, entry.get("url"))
+                best = (repo, entry)
     return best[1] if best else None
 
 

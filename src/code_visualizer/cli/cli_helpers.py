@@ -683,6 +683,57 @@ def graph_start_url(base_url: str, target: Optional[str], changes: Optional[str]
     return f"{base_url}/graph"
 
 
+def _print_update_notice() -> None:
+    """One line when a newer release is published (asked once a day at most,
+    in the background: the server does not wait for it)."""
+    import threading
+
+    def check():
+        from ..utils.update_check import update_available
+
+        found = update_available()
+        if found:
+            console.print(f"[yellow]Code Visualizer {found['latest']} is published (this is "
+                          f"{found['current']}): {found['url']}[/yellow]")
+
+    threading.Thread(target=check, name="cviz-update-check", daemon=True).start()
+
+
+def _server_version(base_url: str) -> Optional[str]:
+    """Version of the cviz that serves *base_url* (its /api/graph-config)."""
+    import json
+    import urllib.request
+
+    try:
+        with urllib.request.urlopen(f"{base_url.rstrip('/')}/api/graph-config", timeout=2) as resp:  # noqa: S310 - loopback
+            return json.loads(resp.read().decode("utf-8")).get("version")
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _stop_running_server(anchor: Path, timeout: float = 20.0) -> bool:
+    """Stop the graph server of *anchor*'s repository (``cviz graph --restart``):
+    True once it has exited."""
+    import signal
+
+    from . import server_registry
+
+    entry = server_registry.entry_for(anchor)
+    pid = int(entry.get("pid") or 0) if entry else 0
+    if pid <= 0 or pid == os.getpid():
+        return False
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except OSError:
+        return True  # already gone
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if not server_registry._pid_alive(pid):
+            return True
+        time.sleep(0.2)
+    return False
+
+
 def _show_graph(base_url: str, url: str, repo_root: str, target: Optional[str],
                 changes: Optional[str], browser_only: bool, wait: float = 0) -> None:
     """Show the page of a graph server: in the desktop app when it is
@@ -722,6 +773,7 @@ def graph_helper(
     full_resync_hours: float = 0,
     changes: Optional[str] = None,
     browser_only: bool = False,
+    restart: bool = False,
 ):
     """Serve the standalone dependency-graph page (``/graph``).
 
@@ -745,9 +797,27 @@ def graph_helper(
         running = server_registry.server_for(Path(anchor or Path.cwd()).resolve())
     except Exception:  # noqa: BLE001
         running = None
+    from ..utils.package_info import installed_version
+    from ..utils.update_check import parse_version
+
+    mine = installed_version()
+    if running:
+        theirs = _server_version(running)
+        other_version = bool(parse_version(theirs) and parse_version(mine) and theirs != mine)
+        if restart and other_version:
+            console.print(f"[yellow]Stopping the graph server of this repository (cviz {theirs}) "
+                          f"to start this one (cviz {mine})...[/yellow]")
+            if _stop_running_server(Path(anchor or Path.cwd()).resolve()):
+                running = None
+            else:
+                console.print("[red]It did not stop: it keeps serving the repository.[/red]")
     if running:
         url = graph_start_url(running, target, changes)
-        console.print(f"[green]The graph server of this repository already runs: {url}[/green]")
+        # The other version is said on the same line: the desktop app reads it
+        # there (desktop/src-tauri: relay) and offers to restart the server.
+        versions = f" (cviz {theirs}, not {mine})" if other_version else ""
+        console.print(f"[green]The graph server of this repository already runs: {url}{versions}[/green]",
+                      soft_wrap=True)  # one line, however narrow the terminal
         if open_browser:
             from .server_registry import find_repo_root
 
@@ -801,7 +871,8 @@ def graph_helper(
     else:
         catch_up_vectorization()
 
-    console.print(f"[green]Dependency graph server on {base_url}/graph[/green]")
+    console.print(f"[green]Dependency graph server on {base_url}/graph[/green]", soft_wrap=True)
+    _print_update_notice()
     if host not in ("127.0.0.1", "localhost", "::1"):
         console.print(
             "[yellow]Listening beyond localhost: remote clients must send CVIZ_API_KEY.[/yellow]"

@@ -1630,6 +1630,7 @@ def graph(
     ),
     no_browser: bool = typer.Option(False, "--no-browser", help="Do not show the page (neither the desktop app nor a browser tab)."),
     browser: bool = typer.Option(False, "--browser", help="Show the page in the browser even when the desktop app is installed (env CVIZ_OPEN_IN=browser)."),
+    restart: bool = typer.Option(False, "--restart", help="When the repository's server already runs with another cviz version, stop it and serve with this one."),
     changes: Optional[str] = typer.Option(
         None, "--changes", "-c", metavar="BRANCH",
         help="Open the Changes view: what the current state adds or modifies against BRANCH, and who is impacted.",
@@ -1667,6 +1668,7 @@ def graph(
         watch_path=watch_path,
         open_browser=not no_browser,
         browser_only=browser,
+        restart=restart,
         use_polling=poll or None,
         full_resync_hours=full_resync_hours,
         changes=changes,

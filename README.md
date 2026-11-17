@@ -188,6 +188,21 @@ uv tool install 'code-visualizer[semantic] @ https://github.com/polysok/code-vis
 cviz graph --watch /path/to/repo      # http://localhost:9324/graph
 ```
 
+### Updates
+
+Nothing updates itself. Once a day at most, a graph server asks GitHub for
+the latest release: when it is newer, the page shows `vX.Y.Z available`
+beside the live badge (a link to the release) and `cviz graph` prints it.
+Without network it gives up within seconds; a development install never
+asks; `CVIZ_NO_UPDATE_CHECK=1` turns it off.
+
+The desktop app carries its own `cviz`, updated with the app. The command
+line (`install.sh`, `uv tool`) is updated on its own, and so are the
+servers it starts (from a terminal, or the MCP server of an IDE): when the
+app opens a repository whose server runs another version, its tab says so
+and offers to restart the server with the app's (`cviz graph --restart`
+stops the running server of another version, then serves).
+
 ## License
 
 MIT — see [LICENSE](LICENSE).

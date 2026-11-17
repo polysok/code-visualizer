@@ -33,6 +33,30 @@ struct RepoServer {
     url: String,
     /// False when the server was already running (the app will not stop it).
     started: bool,
+    /// A server already running with another cviz version: (its, the app's).
+    other_version: Option<(String, String)>,
+}
+
+/// What the "already runs" / "graph server on" line of `cviz graph` says.
+#[derive(Debug, PartialEq)]
+struct Found {
+    url: String,
+    already_running: bool,
+    other_version: Option<(String, String)>,
+}
+
+fn parse_server_line(line: &str) -> Option<Found> {
+    if !(line.contains("already runs") || line.contains("graph server on")) {
+        return None;
+    }
+    let url = Regex::new(r"https?://[^\s/]+:\d+/graph").unwrap();
+    let versions = Regex::new(r"\(cviz ([^,\s]+), not ([^)\s]+)\)").unwrap();
+    let found = url.find(line)?;
+    Some(Found {
+        url: found.as_str().to_string(),
+        already_running: line.contains("already runs"),
+        other_version: versions.captures(line).map(|c| (c[1].to_string(), c[2].to_string())),
+    })
 }
 
 #[derive(serde::Serialize, Clone)]
@@ -127,16 +151,13 @@ fn stop(mut child: Child) {
 
 /// Relays a stream of the server's output to the tab; reports the URL line.
 /// The URL is sent with whether the server was already running.
-fn relay<E: Fn(LogLine) + Send + 'static>(emit: E, path: String, stream: impl Read + Send + 'static, url_tx: mpsc::Sender<(String, bool)>) {
+fn relay<E: Fn(LogLine) + Send + 'static>(emit: E, path: String, stream: impl Read + Send + 'static, url_tx: mpsc::Sender<Found>) {
     thread::spawn(move || {
         let ansi = Regex::new(r"\x1b\[[0-9;]*[A-Za-z]").unwrap();
-        let url = Regex::new(r"https?://[^\s/]+:\d+/graph").unwrap();
         for line in BufReader::new(stream).lines().map_while(Result::ok) {
             let line = ansi.replace_all(&line, "").to_string();
-            if line.contains("already runs") || line.contains("graph server on") {
-                if let Some(found) = url.find(&line) {
-                    let _ = url_tx.send((found.as_str().to_string(), line.contains("already runs")));
-                }
+            if let Some(found) = parse_server_line(&line) {
+                let _ = url_tx.send(found);
             }
             emit(LogLine { path: path.clone(), line });
         }
@@ -158,13 +179,18 @@ fn start_server<E: Fn(LogLine) + Clone + Send + 'static>(
     emit: E,
     path: &str,
     grammars: Option<PathBuf>,
+    restart: bool,
 ) -> Result<RepoServer, String> {
     let program = cviz_program();
     let mut cmd = Command::new(&program);
     if let Some(dir) = grammars {
         cmd.env("TREE_SITTER_LANGUAGE_PACK_CACHE_DIR", dir);
     }
-    cmd.args(["graph", "--watch", path, "--no-browser"])
+    cmd.args(["graph", "--watch", path, "--no-browser"]);
+    if restart {
+        cmd.arg("--restart");  // the server of another version is stopped first
+    }
+    cmd
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -190,7 +216,7 @@ fn start_server<E: Fn(LogLine) + Clone + Send + 'static>(
 
     servers.0.lock().unwrap().insert(path.to_string(), child);
     let started_at = Instant::now();
-    let (url, already_running) = loop {
+    let Found { url, already_running, other_version } = loop {
         match rx.recv_timeout(Duration::from_millis(300)) {
             Ok(found) => break found,
             Err(mpsc::RecvTimeoutError::Timeout) => {}
@@ -227,19 +253,19 @@ fn start_server<E: Fn(LogLine) + Clone + Send + 'static>(
         thread::sleep(Duration::from_millis(200));
     }
     let started = !already_running;
-    Ok(RepoServer { url, started })
+    Ok(RepoServer { url, started, other_version })
 }
 
 /// The graph page of *path*, starting its server when none runs.
 #[tauri::command]
-async fn open_repo(app: AppHandle, path: String) -> Result<RepoServer, String> {
+async fn open_repo(app: AppHandle, path: String, restart: Option<bool>) -> Result<RepoServer, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let emitter = app.clone();
         let emit = move |line: LogLine| {
             let _ = emitter.emit("repo-log", line);
         };
         let grammars = grammars_dir(&app);
-        start_server(&app.state::<Servers>(), emit, &path, grammars)
+        start_server(&app.state::<Servers>(), emit, &path, grammars, restart.unwrap_or(false))
     })
         .await
         .map_err(|e| e.to_string())?
@@ -462,6 +488,20 @@ pub fn run() {
 mod tests {
     use super::*;
 
+    #[test]
+    fn the_server_line_gives_the_url_and_another_version() {
+        let started = parse_server_line("Dependency graph server on http://localhost:9324/graph").unwrap();
+        assert_eq!(started, Found { url: "http://localhost:9324/graph".into(), already_running: false, other_version: None });
+        let same = parse_server_line("The graph server of this repository already runs: http://localhost:9325/graph").unwrap();
+        assert!(same.already_running && same.other_version.is_none());
+        let other = parse_server_line(
+            "The graph server of this repository already runs: http://localhost:9325/graph?path=%2Fr%2Fa.py (cviz 1.9.0, not 0.9.9)",
+        ).unwrap();
+        assert_eq!(other.url, "http://localhost:9325/graph");
+        assert_eq!(other.other_version, Some(("1.9.0".into(), "0.9.9".into())));
+        assert!(parse_server_line("Indexing: parse [3/10]").is_none());
+    }
+
     /// Needs a `cviz` binary (CVIZ_DESKTOP_CVIZ) and a repository to open
     /// (CVIZ_DESKTOP_TEST_REPO); skipped otherwise.
     #[test]
@@ -472,12 +512,12 @@ mod tests {
         let sink = lines.clone();
         let emit = move |l: LogLine| sink.lock().unwrap().push(l.line);
 
-        let first = start_server(&servers, emit.clone(), &repo, None).expect("server started");
+        let first = start_server(&servers, emit.clone(), &repo, None, false).expect("server started");
         assert!(first.started && answers(&first.url), "{:?}", lines.lock().unwrap());
 
         // A second app (or the same one after a restart) reuses it.
         let other = Servers::default();
-        let second = start_server(&other, emit, &repo, None).expect("server found");
+        let second = start_server(&other, emit, &repo, None, false).expect("server found");
         assert_eq!(second.url, first.url);
         assert!(!second.started);
         assert!(other.0.lock().unwrap().is_empty());
