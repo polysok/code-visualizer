@@ -40,6 +40,7 @@ class Resp:
 def fake_llm(monkeypatch, content=None, statuses=(200,)):
     sent = []
     statuses = list(statuses)
+    monkeypatch.setattr(chat_mod, "_accepted", {})  # what servers accepted earlier
 
     def post(url, json, headers, timeout):
         sent.append({"url": url, **json})
@@ -58,6 +59,35 @@ def test_parse_reply_keeps_valid_candidates_only():
     assert r == {"results": [2, 0], "answer": None, "parsed": True}
     r = chat_mod.parse_reply("Sorry, plain text.", 5)
     assert r["results"] is None and r["answer"] == "Sorry, plain text."
+
+
+def test_an_invalid_json_reply_is_read_all_the_same():
+    """A local model's reply: an extra bracket after the results; the page
+    showed the whole JSON as text."""
+    reply = ('```json\n{\n  "results": [\n    1,\n    2,\n    4,\n    5,\n    8,\n    11,\n    12]\n  ],\n'
+             '  "answer": "Couverte par les tests dans `oci.rs`, avec le bon `Accept` header."\n}\n```')
+    r = chat_mod.parse_reply(reply, 15)
+    assert r == {"results": [0, 1, 3, 4, 7], "parsed": True,
+                 "answer": "Couverte par les tests dans `oci.rs`, avec le bon `Accept` header."}
+
+
+def test_a_reply_cut_by_the_token_limit_is_read_all_the_same():
+    """The model's JSON in a ```json block, cut before its end: the page
+    showed it as text (the chat's "parsing problem")."""
+    cut = ('```json\n{\n  "results": [\n    1,\n    2,\n    4,\n    5,\n    8,\n    11,\n    12]\n  ],\n'
+           '  "answer": "L\'implémentation de la partie OCI est couverte par les tests dans `oci.rs`. '
+           'Elle v\u00e9rifie le header \\"Accept\\" et les blobs contre leur digest attendu, ainsi que')
+    r = chat_mod.parse_reply(cut, 15)
+    assert r["parsed"] is True
+    assert r["results"] == [0, 1, 3, 4, 7]  # at most 5
+    assert r["answer"].startswith("L'implémentation de la partie OCI")
+    assert 'vérifie le header "Accept"' in r["answer"]
+    assert r["answer"].endswith("ainsi que…")  # cut short, said so
+
+
+def test_a_complete_reply_followed_by_text_is_read():
+    r = chat_mod.parse_reply('{"results": [2], "answer": "It parses."}\nHope this helps!', 3)
+    assert r == {"results": [1], "answer": "It parses.", "parsed": True}
 
 
 def test_without_llm_returns_search_top5():
@@ -85,6 +115,29 @@ def test_llm_rejecting_reasoning_param_is_retried_without_it(monkeypatch):
     r = chat_mod.chat([{"role": "user", "content": "x"}], search_engine=FakeEngine(), llm=LLM)
     assert "reasoning_effort" in sent[0] and "reasoning_effort" not in sent[1]
     assert r["hits"] == [] and r["reranked"] and len(r["search_hits"]) == 5
+
+
+def test_the_reply_is_constrained_to_its_json_schema(monkeypatch):
+    sent = fake_llm(monkeypatch, '{"results": [1], "answer": null}')
+    chat_mod.chat([{"role": "user", "content": "x"}], search_engine=FakeEngine(), llm=LLM)
+    fmt = sent[0]["response_format"]
+    assert fmt["type"] == "json_schema" and fmt["json_schema"]["schema"] == chat_mod.REPLY_SCHEMA
+
+
+def test_a_server_rejecting_the_schema_is_asked_without_it_then_remembered(monkeypatch):
+    # Both optional fields refused, then the schema alone, then no reasoning alone.
+    sent = fake_llm(monkeypatch, '{"results": [], "answer": null}', statuses=(422, 400, 200, 200))
+    chat_mod.chat([{"role": "user", "content": "x"}], search_engine=FakeEngine(), llm=LLM)
+    assert [("reasoning_effort" in p, "response_format" in p) for p in sent] == [
+        (True, True), (False, True), (True, False)]
+    chat_mod.chat([{"role": "user", "content": "y"}], search_engine=FakeEngine(), llm=LLM)
+    assert len(sent) == 4 and "reasoning_effort" in sent[3] and "response_format" not in sent[3]
+
+
+def test_another_error_is_not_retried(monkeypatch):
+    sent = fake_llm(monkeypatch, "", statuses=(500,))
+    r = chat_mod.chat([{"role": "user", "content": "x"}], search_engine=FakeEngine(), llm=LLM)
+    assert len(sent) == 1 and "LLM server error 500" in r["warning"]
 
 
 def test_llm_down_falls_back_to_search(monkeypatch):
