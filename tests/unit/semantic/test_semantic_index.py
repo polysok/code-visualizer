@@ -308,3 +308,45 @@ def test_a_stopped_vectorization_keeps_its_vectors_and_the_index(graph, monkeypa
     with graph.session() as s:
         assert graph_index.search_ready(s)["vector"]
         assert graph_index.stats(s, "openai:m1")["embedded"] == 3 + indexer.EMBED_CHUNK
+
+
+def test_an_older_versions_indexes_no_longer_block_the_writes(tmp_path, monkeypatch):
+    """A database of an older version has full-text indexes and vector indexes
+    under other names: the writes failed ("Trying to delete from an index on
+    table Function but its extension is not loaded"), and the watcher with
+    them. Opened, the database loads their extensions and drops them."""
+    from code_visualizer.core import ladybugdb_unavailable_reason
+    from code_visualizer.core.database_ladybug import LadybugDBManager
+
+    lb = pytest.importorskip("ladybug")
+    reason = ladybugdb_unavailable_reason()
+    if reason:
+        pytest.skip(reason)
+    path = str(tmp_path / "db")
+    manager = LadybugDBManager(path)
+    with manager.get_driver().session() as s:
+        s.run("MERGE (f:Function {uid: 'a'}) SET f.name = 'old', f.path = '/r/a.py'")
+    manager.close_driver()
+
+    db = lb.Database(path)
+    conn = lb.Connection(db)
+    try:
+        for ext in ("fts", "vector"):
+            conn.execute(f"LOAD {ext}")
+    except Exception as exc:  # noqa: BLE001 - not installed here (no network)
+        pytest.skip(f"LadybugDB extensions unavailable: {exc}")
+    conn.execute("ALTER TABLE Function ADD search_embedding_3 FLOAT[3]")
+    conn.execute("CALL CREATE_FTS_INDEX('Function', 'cgc_fts_Function', ['name'])")
+    conn.execute("CALL CREATE_VECTOR_INDEX('Function', 'cgc_vec_Function_3', 'search_embedding_3', metric := 'cosine')")
+    conn.close()
+    db.close()
+
+    # A new process: no extension loaded until the manager opens the database.
+    manager = LadybugDBManager(path)
+    try:
+        with manager.get_driver().session() as s:
+            s.run("MATCH (f:Function {uid: 'a'}) DETACH DELETE f")
+            left = [r["n"] for r in s.run_native("CALL SHOW_INDEXES() RETURN index_name AS n").data()]
+        assert not [n for n in left if n.startswith("cgc_")]
+    finally:
+        manager.close_driver()

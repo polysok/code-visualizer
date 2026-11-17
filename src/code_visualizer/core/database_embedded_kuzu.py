@@ -512,41 +512,61 @@ class EmbeddedGraphManager(GraphQueryInterface):
     # Extensions whose indexes (natural-language search, semantic/graph_index)
     # must be loaded before any write: LadybugDB refuses to insert into or
     # delete from a table carrying an index whose extension is not loaded.
-    _INDEX_EXTENSIONS = {"vector": "HNSW"}
+    # Extension of each index type: a write to an indexed table fails while
+    # the extension of its index is not loaded.
+    _INDEX_EXTENSIONS = {"vector": "HNSW", "fts": "FTS"}
+    # The only search indexes in use (semantic/graph_index.py: vec_index).
+    _OWN_INDEX_PREFIX = "cviz_vec_"
 
     def _load_index_extensions(self):
-        """LOAD the vector extension; INSTALL it only when an index needs it.
+        """LOAD the extensions of the database's indexes, then drop the indexes
+        nothing uses.
 
         LOAD of an installed extension is local and cheap. INSTALL downloads it
         (extension.ladybugdb.com), so it is attempted only when the database
-        already has an index of that type: without it, every write to the
-        indexed tables would fail.
+        has an index of that type: without it, every write to the indexed
+        tables would fail ("Trying to delete from an index on table Function
+        but its extension is not loaded"), and the watcher with them.
+
+        Databases of older versions carry full-text indexes and vector indexes
+        under other names (cgc_fts_*, cgc_vec_*): unused, they would still
+        need their extension on every write, and an extra vector index exposes
+        the writes to the HNSW crash that drop_vector_indexes avoids. Dropped.
         """
-        index_types = None
+        try:
+            rows = self._conn.execute("CALL SHOW_INDEXES() RETURN table_name, index_name, index_type").get_all()
+            found = [tuple(row) for row in rows if len(row) == 3]
+        except Exception:
+            found = []
+        types = {index_type for _, _, index_type in found}
+        loaded = set()
         for ext, index_type in self._INDEX_EXTENSIONS.items():
             try:
                 self._conn.execute(f"LOAD {ext}")
+                loaded.add(index_type)
                 continue
             except Exception:
                 pass
-            if index_types is None:
-                index_types = set()
-                try:
-                    res = self._conn.execute("CALL SHOW_INDEXES() RETURN index_type")
-                    while res.has_next():
-                        index_types.add(res.get_next()[0])
-                except Exception:
-                    pass
-            if index_type not in index_types:
+            if index_type not in types:
                 continue
             try:
                 self._conn.execute(f"INSTALL {ext}")
                 self._conn.execute(f"LOAD {ext}")
+                loaded.add(index_type)
             except Exception as e:
                 warning_logger(
                     f"LadybugDB extension '{ext}' could not be installed ({e}). The search "
                     f"indexes need it: writes to indexed tables will fail until it loads."
                 )
+        drop = {"FTS": "DROP_FTS_INDEX", "HNSW": "DROP_VECTOR_INDEX"}
+        for table, name, index_type in found:
+            if index_type not in drop or index_type not in loaded or str(name).startswith(self._OWN_INDEX_PREFIX):
+                continue
+            try:
+                self._conn.execute(f"CALL {drop[index_type]}('{table}', '{name}')")
+                info_logger(f"Dropped the unused index {name} of {table} (an older version's)")
+            except Exception as e:
+                warning_logger(f"Could not drop the unused index {name} of {table}: {e}")
 
     def close_driver(self):
         """Closes the connection pool and releases database resources."""
