@@ -77,7 +77,23 @@ def _pid_alive(pid) -> bool:
         return True
     except OSError:
         return False
-    return True
+    return not _zombie(pid)
+
+
+def _zombie(pid: int) -> bool:
+    """A process that has exited but that its parent has not waited for yet
+    (a graph server started by an MCP server, for instance): signal 0 still
+    reaches it, but it serves nothing."""
+    if os.name == "nt" or pid == os.getpid():
+        return False
+    try:
+        import subprocess
+
+        out = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True,
+                             text=True, timeout=2).stdout.strip()
+    except Exception:  # noqa: BLE001 - no ps: trust the signal
+        return False
+    return out.startswith("Z")
 
 
 def _read() -> Dict[str, dict]:

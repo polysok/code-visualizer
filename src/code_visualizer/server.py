@@ -374,6 +374,11 @@ class MCPServer:
                                        **kwargs)
         finally:
             log.close()
+        # Waited for when it exits (a crash, a stop): else it stays a zombie
+        # that the server registry would take for a running server.
+        import threading
+
+        threading.Thread(target=process.wait, name="cviz-graph-reaper", daemon=True).start()
         print(f"Started the graph server of {root} (log: {self._graph_log()})", file=sys.stderr, flush=True)
         return process
 

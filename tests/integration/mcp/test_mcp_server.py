@@ -132,6 +132,9 @@ class _FakeProcess:
     def poll(self):
         return self.returncode
 
+    def wait(self):  # the reaper thread (server._start_graph_server)
+        return self.returncode
+
 
 def test_starts_the_graph_server_instead_of_opening_the_database(monkeypatch, tmp_path):
     """With no cviz graph running, the MCP server starts one and goes through

@@ -98,3 +98,24 @@ def test_free_port_skips_a_port_in_use():
         busy.listen()
         port = busy.getsockname()[1]
         assert server_registry.free_port(port) != port
+
+
+@pytest.mark.skipif(os.name == "nt", reason="no zombie processes on Windows")
+def test_server_registry_drops_a_server_that_exited_unwaited(tmp_path, monkeypatch):
+    """A graph server started by an MCP server that crashed: its process is a
+    zombie until the parent waits for it, and served nothing (the desktop
+    app's tab said "already runs", then "does not answer")."""
+    import time
+
+    monkeypatch.setenv("CVIZ_SERVERS_FILE", str(tmp_path / "servers.json"))
+    child = subprocess.Popen(["true"])
+    try:
+        for _ in range(50):  # until it has exited (not waited for: a zombie)
+            if subprocess.run(["ps", "-o", "stat=", "-p", str(child.pid)], capture_output=True,
+                              text=True).stdout.startswith("Z"):
+                break
+            time.sleep(0.05)
+        server_registry.register(tmp_path, "http://localhost:9999", pid=child.pid)
+        assert server_registry.server_for(tmp_path / "f.py") is None
+    finally:
+        child.wait()
